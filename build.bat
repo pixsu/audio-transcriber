@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================
-REM  One-click build: creates a venv, installs requirements,
+REM  One-click build: creates a venv, installs the pinned requirements,
 REM  and builds the program folder dist\MP3Transcriber\
 REM  (plus dist\MP3Transcriber.zip for copying to other PCs).
 REM ============================================================
@@ -22,7 +22,7 @@ if not exist ".venv\Scripts\python.exe" (
 
 echo Installing requirements...
 ".venv\Scripts\python.exe" -m pip install --upgrade pip || goto :error
-".venv\Scripts\python.exe" -m pip install -r requirements.txt --only-binary=av || goto :error
+".venv\Scripts\python.exe" -m pip install -r requirements-lock.txt --only-binary=av || goto :error
 
 REM Build into a staging folder first. PyInstaller wipes its output folder,
 REM and we don't want that to delete your models, config.json or log.

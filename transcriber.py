@@ -15,14 +15,21 @@ The original audio files are only ever READ. They are never changed, moved,
 or deleted.
 """
 
+import hashlib
 import json
 import logging
+import logging.handlers
 import os
 import re
 import sys
 import time
 import traceback
 from pathlib import Path
+
+
+class UserError(Exception):
+    """A problem the user can fix (bad config, already running, ...).
+    Shown as a plain message instead of a full error report."""
 
 
 # ---------------------------------------------------------------------------
@@ -126,8 +133,8 @@ def load_config() -> dict:
         try:
             user_config = json.load(f)
         except json.JSONDecodeError as e:
-            raise ValueError(
-                f"config.json is not valid JSON ({e}).\n"
+            raise UserError(
+                f"{CONFIG_PATH} is not valid JSON ({e}).\n"
                 "Tip: backslashes in Windows paths must be doubled, "
                 r'e.g. "C:\\Users\\YourName\\Documents\\mp3"'
             ) from None
@@ -189,13 +196,21 @@ def setup_logging() -> None:
     console.addFilter(only_ours)
     root.addHandler(console)
 
-    logfile = logging.FileHandler(LOG_PATH, encoding="utf-8")
+    # The log file is capped: when it reaches 1 MB it is renamed to
+    # transcriber.log.1 (older ones to .2, .3) and a new one is started.
+    logfile = logging.handlers.RotatingFileHandler(
+        LOG_PATH, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
     logfile.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     logfile.addFilter(only_ours)
     root.addHandler(logfile)
 
+    # Full error details (tracebacks) go to the log file only, not the console.
+    file_only.addHandler(logfile)
+    file_only.propagate = False
+
 
 log = logging.getLogger("transcriber")
+file_only = logging.getLogger("transcriber.details")
 
 
 # ---------------------------------------------------------------------------
@@ -383,9 +398,58 @@ def list_audio_files(input_dir: Path, file_types: set) -> list:
     return sorted(files, key=lambda p: p.name.lower())
 
 
-def output_path_for(audio_path: Path, output_dir: Path) -> Path:
-    """meeting1.mp3 -> <output_dir>/meeting1.txt"""
-    return output_dir / (audio_path.stem + ".txt")
+def hide_file(path: Path) -> None:
+    """Mark a file as hidden in Explorer (Windows only, best effort)."""
+    try:
+        import ctypes
+        FILE_ATTRIBUTE_HIDDEN = 2
+        ctypes.windll.kernel32.SetFileAttributesW(str(path), FILE_ATTRIBUTE_HIDDEN)
+    except Exception:
+        pass
+
+
+class OutputNames:
+    """Decides the .txt name for each input file, and remembers it.
+
+    Normally song.mp3 -> song.txt. But if song.txt was already made from a
+    different file with the same name (e.g. song.mp4), the new one becomes
+    song.mp3.txt, so neither file blocks or overwrites the other.
+
+    Which input each .txt came from is kept in a small hidden file in the
+    output folder (.transcriber-index.json).
+    """
+
+    INDEX_NAME = ".transcriber-index.json"
+
+    def __init__(self, output_dir: Path):
+        self.output_dir = output_dir
+        self.index_path = output_dir / self.INDEX_NAME
+        self.owners = {}  # "song.txt" (lowercase) -> "song.mp3"
+        try:
+            data = json.loads(self.index_path.read_text(encoding="utf-8"))
+            self.owners = {k.lower(): v for k, v in data.items()}
+        except (OSError, ValueError, AttributeError):
+            pass  # no index yet (or unreadable): start fresh
+
+    def path_for(self, audio: Path) -> Path:
+        plain = audio.stem + ".txt"
+        owner = self.owners.get(plain.lower())
+        if owner is None or owner.lower() == audio.name.lower():
+            return self.output_dir / plain
+        return self.output_dir / (audio.name + ".txt")  # song.mp4.txt
+
+    def claim(self, txt: Path, audio: Path) -> None:
+        """Record that txt was made from audio."""
+        if self.owners.get(txt.name.lower()) == audio.name:
+            return
+        self.owners[txt.name.lower()] = audio.name
+        try:
+            tmp = self.index_path.with_name(self.INDEX_NAME + ".tmp")
+            tmp.write_text(json.dumps(self.owners, indent=1), encoding="utf-8")
+            os.replace(tmp, self.index_path)
+            hide_file(self.index_path)
+        except OSError as e:
+            log.warning("Could not save %s: %s", self.index_path.name, e)
 
 
 def file_signature(path: Path):
@@ -419,6 +483,7 @@ class Transcriber:
         self.config = config
         self.input_dir = Path(config["input_folder"])
         self.output_dir = Path(config["output_folder"])
+        self.names = OutputNames(self.output_dir)
         # Files that failed: name -> signature. Not retried unless the file changes.
         self.failed = {}
         # Last seen size of files waiting to finish copying: name -> size.
@@ -426,7 +491,11 @@ class Transcriber:
 
     def needs_work(self, audio: Path) -> bool:
         """True if this file has no .txt yet and hasn't already failed."""
-        if output_path_for(audio, self.output_dir).exists():
+        txt = self.names.path_for(audio)
+        if txt.exists():
+            # Transcripts made before the index existed: record who owns them,
+            # so a later file with the same name gets its own .txt.
+            self.names.claim(txt, audio)
             return False
         if audio.name in self.failed and self.failed[audio.name] == file_signature(audio):
             return False
@@ -436,20 +505,21 @@ class Transcriber:
         """Transcribe files one at a time. One bad file never stops the rest."""
         total = len(files)
         for i, audio in enumerate(files, start=1):
-            txt = output_path_for(audio, self.output_dir)
+            # Decided now (not earlier), so a same-name file finished a moment
+            # ago in this batch is taken into account.
+            txt = self.names.path_for(audio)
             log.info("[%d/%d] Transcribing %s...", i, total, audio.name)
             start = time.time()
             try:
                 transcribe_file(self.model, audio, txt, self.config)
+                self.names.claim(txt, audio)
                 log.info("Done → %s (took %.0fs)", txt.name, time.time() - start)
                 self.failed.pop(audio.name, None)
             except KeyboardInterrupt:
                 raise
             except Exception as e:
                 log.error("FAILED %s: %s (skipping it)", audio.name, e)
-                # Full details go to the log file only.
-                with open(LOG_PATH, "a", encoding="utf-8") as f:
-                    f.write(traceback.format_exc())
+                file_only.error("Details for %s:\n%s", audio.name, traceback.format_exc())
                 self.failed[audio.name] = file_signature(audio)
                 # Clean up any leftover partial output.
                 part = txt.with_name(txt.name + ".part")
@@ -538,6 +608,7 @@ def main() -> None:
     config = load_config()
     input_dir = Path(config["input_folder"])
     output_dir = Path(config["output_folder"])
+    ensure_single_instance(input_dir)
 
     log.info("Input folder : %s", input_dir)
     log.info("Output folder: %s", output_dir)
@@ -554,7 +625,7 @@ def main() -> None:
                 folder.mkdir(parents=True, exist_ok=True)
                 log.info("Created folder: %s", folder)
             except OSError as e:
-                raise OSError(
+                raise UserError(
                     f"Could not create the folder {folder} ({e}).\n"
                     f"Edit input_folder / output_folder in {CONFIG_PATH}"
                 ) from None
@@ -563,24 +634,74 @@ def main() -> None:
     Transcriber(model, config).run_forever()
 
 
+# Kept for the whole run: Windows releases the lock when the program exits.
+_instance_lock = None
+
+
+def ensure_single_instance(input_dir: Path) -> None:
+    """Stop if another copy is already watching the same input folder.
+
+    Two copies would grab the same new files and transcribe them twice.
+    Uses a named Windows mutex, which disappears automatically when the
+    program closes or crashes, so it can never get "stuck".
+    """
+    global _instance_lock
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    folder_id = hashlib.sha1(str(input_dir.resolve()).lower().encode("utf-8")).hexdigest()[:16]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+    handle = kernel32.CreateMutexW(None, False, f"Local\\AudioTranscriber-{folder_id}")
+    if not handle:
+        return  # couldn't check; carry on rather than block the user
+    ERROR_ALREADY_EXISTS = 183
+    if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(handle)
+        raise UserError(
+            f"Another copy of the transcriber is already watching {input_dir}.\n"
+            "Close the other window first (or check the taskbar), then start this one again."
+        )
+    _instance_lock = handle
+
+
+def wait_for_enter() -> None:
+    try:
+        input("Press Enter to exit...")
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
         print("\nStopped by user.")
+    except UserError as e:
+        # A problem the user can fix: show just the message.
+        print("\n" + "=" * 60)
+        print(e)
+        print("=" * 60)
+        file_only.error("Stopped: %s", e)
+        wait_for_enter()
+        sys.exit(1)
     except Exception:
-        # Show the error instead of letting the window vanish.
+        # Unexpected error: show the full details instead of letting the
+        # window vanish.
         print("\n" + "=" * 60)
         print("ERROR - the program stopped:")
         traceback.print_exc()
-        try:
-            with open(LOG_PATH, "a", encoding="utf-8") as f:
-                f.write("FATAL ERROR:\n" + traceback.format_exc())
-        except OSError:
-            pass
         print("=" * 60)
-        try:
-            input("Press Enter to exit...")
-        except (EOFError, KeyboardInterrupt):
-            pass
+        if file_only.handlers:
+            file_only.error("FATAL ERROR:\n%s", traceback.format_exc())
+        else:  # logging wasn't set up yet
+            try:
+                with open(LOG_PATH, "a", encoding="utf-8") as f:
+                    f.write("FATAL ERROR:\n" + traceback.format_exc())
+            except OSError:
+                pass
+        wait_for_enter()
         sys.exit(1)

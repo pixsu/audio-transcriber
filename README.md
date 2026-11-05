@@ -17,7 +17,8 @@ subscription is needed.
 - **Safe:** original files are only read, never modified, moved or deleted.
   Files that already have a transcript are skipped, so re-running is safe.
 - **Robust:** waits until a file has finished copying before starting, and a
-  corrupted file is logged and skipped without stopping the program.
+  corrupted file is logged and skipped without stopping the program. Only
+  one copy can watch a folder at a time, so files are never processed twice.
 - **Accurate on music and speech:** uses the file name as a hint for names and
   song titles, and removes lines Whisper is known to invent (such as
   *"Thanks for watching!"*).
@@ -77,7 +78,10 @@ When it finishes you will have:
    Watching C:\Users\YourName\Documents\mp3 for new audio files every 10s...
    ```
 4. Each file gets a transcript with the same name: `meeting1.mp3` →
-   `meeting1.txt`.
+   `meeting1.txt`. If two files share a name (e.g. `song.mp3` and
+   `song.mp4`), the second one gets `song.mp4.txt` so neither is skipped or
+   overwritten. (This is tracked in a small hidden file,
+   `.transcriber-index.json`, in the output folder.)
 5. To stop, press **Ctrl+C** or close the window.
 
 Tip: right-click `MP3Transcriber.exe` → *Send to → Desktop (create shortcut)*.
@@ -205,12 +209,16 @@ and keeps working.
 | Only part of a song is transcribed | Set `"vad_filter": false`. |
 | `config.json is not valid JSON` | Paths need double backslashes (`C:\\Users\\...`), and every line except the last needs a comma. |
 | A file failed | The error is shown in the console and saved in `transcriber.log`. Failed files are not retried unless the file changes; restart the program to retry. |
+| "Another copy of the transcriber is already watching..." | The program is already running (check the taskbar). Close that window first. |
+| A transcript should be redone | Delete its `.txt` file; it is transcribed again within one check. |
 | Very slow | Use a smaller `model_size`, or set up a GPU. |
 | `GPU could not be used` | The CUDA libraries are missing; see [GPU acceleration](#gpu-acceleration-optional). |
 | Antivirus warning | Unsigned programs built with PyInstaller are sometimes flagged by mistake. Building it yourself from this source avoids trusting a third-party binary. |
 | Transcript has odd lines in instrumental parts | Whisper sometimes guesses words during music. Common fake lines are removed automatically; others can be deleted by hand. |
 
-Logs are written to `transcriber.log` next to the .exe.
+Logs are written to `transcriber.log` next to the .exe, including full error
+details. The log is capped at 1 MB; older entries move to
+`transcriber.log.1` to `.3`, so it never grows without limit.
 
 ## Running from source
 
@@ -227,12 +235,13 @@ next to `transcriber.py`.
 ## Project structure
 
 ```text
-transcriber.py     The application
-requirements.txt   Python dependencies
-build.bat          One-click build script (venv + install + PyInstaller)
-README.md          This file
-.gitignore         Keeps build output, models and personal settings out of git
-.gitattributes     Keeps build.bat in Windows line endings
+transcriber.py          The application
+requirements.txt        Top-level Python dependencies (loose versions)
+requirements-lock.txt   Exact tested versions, used by build.bat
+build.bat               One-click build script (venv + install + PyInstaller)
+README.md               This file
+.gitignore              Keeps build output, models and personal settings out of git
+.gitattributes          Keeps build.bat in Windows line endings
 ```
 
 Generated (not in git): `.venv\`, `build\`, `dist\`, and at runtime
@@ -261,8 +270,14 @@ pyinstaller --noconfirm --clean --onedir --console --name MP3Transcriber ^
 - `--onedir` (a folder) is used instead of `--onefile`: a single-file .exe
   unpacks itself to the Temp folder on every start, which is slower and leaves
   large leftovers behind if the program is closed abruptly.
-- PyAV is pinned below version 15 in `requirements.txt`, because newer versions
-  break faster-whisper's audio loading.
+- Dependencies are installed from `requirements-lock.txt` (exact versions), so
+  every build uses the same tested packages. A new release of any library
+  can't silently break the build. For example, PyAV 15+ breaks
+  faster-whisper's audio loading, so it is held at 14.2.0.
+- To update dependencies: install `requirements.txt` into a fresh `.venv`, test
+  the app, then regenerate the lock file with
+  `.venv\Scripts\python.exe -m pip freeze > requirements-lock.txt`
+  (remove the `pip` and `setuptools` lines).
 
 ## Acknowledgements
 

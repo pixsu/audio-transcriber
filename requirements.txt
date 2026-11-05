@@ -1,3 +1,7 @@
+# Top-level dependencies (loose versions). build.bat installs the exact,
+# tested versions from requirements-lock.txt instead; use this file only
+# when updating packages.
+
 # Speech-to-text engine. Pulls in ctranslate2, PyAV (audio decoding),
 # onnxruntime (silence filter), tokenizers and huggingface_hub (model download).
 faster-whisper>=1.1.0
