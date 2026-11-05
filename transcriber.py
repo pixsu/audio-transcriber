@@ -65,9 +65,30 @@ os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 # Config
 # ---------------------------------------------------------------------------
 
+def get_documents_dir() -> Path:
+    """The current user's Documents folder.
+
+    Asks Windows for it, because Documents may have been moved (e.g. into
+    OneDrive). Falls back to <home>\\Documents.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+        buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
+        CSIDL_PERSONAL = 5  # "My Documents"
+        if ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, 0, buf) == 0 and buf.value:
+            return Path(buf.value)
+    except Exception:
+        pass
+    return Path.home() / "Documents"
+
+
+DOCUMENTS_DIR = get_documents_dir()
+
 DEFAULT_CONFIG = {
-    "input_folder": r"C:\Users\Gelo\Documents\mp3",
-    "output_folder": r"C:\Users\Gelo\Documents\transcribed",
+    # Defaults: Documents\mp3 and Documents\transcribed of whoever runs it.
+    "input_folder": str(DOCUMENTS_DIR / "mp3"),
+    "output_folder": str(DOCUMENTS_DIR / "transcribed"),
     # tiny, base, small, medium, large-v3
     "model_size": "small",
     # "auto" = detect the language. Or force one, e.g. "en" or "tl" (Tagalog).
@@ -108,7 +129,7 @@ def load_config() -> dict:
             raise ValueError(
                 f"config.json is not valid JSON ({e}).\n"
                 "Tip: backslashes in Windows paths must be doubled, "
-                r'e.g. "C:\\Users\\Gelo\\Documents\\mp3"'
+                r'e.g. "C:\\Users\\YourName\\Documents\\mp3"'
             ) from None
 
     config = dict(DEFAULT_CONFIG)
@@ -525,9 +546,18 @@ def main() -> None:
              "on" if config["include_timestamps"] else "off",
              "on" if config["vad_filter"] else "off")
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    if not input_dir.is_dir():
-        log.warning("Input folder does not exist yet: %s (will keep checking)", input_dir)
+    # Create both folders if needed, so first-time users get a folder ready
+    # to drop files into.
+    for folder in (input_dir, output_dir):
+        if not folder.is_dir():
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                log.info("Created folder: %s", folder)
+            except OSError as e:
+                raise OSError(
+                    f"Could not create the folder {folder} ({e}).\n"
+                    f"Edit input_folder / output_folder in {CONFIG_PATH}"
+                ) from None
 
     model = load_model(config)
     Transcriber(model, config).run_forever()

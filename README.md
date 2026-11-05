@@ -57,38 +57,24 @@ When it finishes you will have:
 > Keep `MP3Transcriber.exe` and the `_internal` folder next to it together.
 > To move the program, move the whole `MP3Transcriber` folder.
 
-### 2. Configure your folders
+### 2. Run it
 
-1. Double-click `dist\MP3Transcriber\MP3Transcriber.exe` once. It creates a
-   `config.json` file next to the .exe. (It may then stop with an error about
-   the output folder because the default paths don't exist on your PC. That's
-   expected; press Enter to close it.)
-2. Open `config.json` in Notepad.
-3. Set `input_folder` (where you put audio files) and `output_folder` (where
-   transcripts are saved) to folders on your PC. **The default paths point to
-   the original author's PC, so change them.** Use double backslashes:
-   ```json
-   "input_folder": "C:\\Users\\YourName\\Documents\\audio",
-   "output_folder": "C:\\Users\\YourName\\Documents\\transcripts",
-   ```
-4. Save the file.
-
-The output folder is created automatically. The input folder must exist.
-
-### 3. Run it
-
-1. Double-click `MP3Transcriber.exe`.
-2. On the first run it downloads the speech model (`small` ≈ 480 MB,
-   `medium` ≈ 1.5 GB) into a `models` folder next to the .exe. After that it
-   works offline.
-3. Drop audio or video files into your input folder. The console shows the
+1. Double-click `dist\MP3Transcriber\MP3Transcriber.exe`.
+2. On the first run it:
+   - creates two folders in **your Documents folder**:
+     `Documents\mp3` (put files here) and `Documents\transcribed`
+     (transcripts appear here);
+   - creates a `config.json` settings file next to the .exe;
+   - downloads the speech model (`small` ≈ 480 MB, `medium` ≈ 1.5 GB) into a
+     `models` folder next to the .exe. After that it works offline.
+3. Drop audio or video files into `Documents\mp3`. The console shows the
    progress:
    ```text
    Found 2 audio files
    [1/2] Transcribing meeting1.mp3...
       Detected language: en (98% sure), audio length 00:42:10
    Done → meeting1.txt (took 312s)
-   Watching C:\Users\YourName\Documents\audio for new audio files every 10s...
+   Watching C:\Users\YourName\Documents\mp3 for new audio files every 10s...
    ```
 4. Each file gets a transcript with the same name: `meeting1.mp3` →
    `meeting1.txt`.
@@ -98,6 +84,19 @@ Tip: right-click `MP3Transcriber.exe` → *Send to → Desktop (create shortcut)
 To start it with Windows, put that shortcut in the Startup folder (press
 `Win + R` and type `shell:startup`).
 
+### 3. Use different folders (optional)
+
+To use other folders, close the program, open `config.json` in Notepad and
+change `input_folder` and `output_folder`. Use double backslashes:
+
+```json
+"input_folder": "D:\\Recordings",
+"output_folder": "D:\\Recordings\\Transcripts",
+```
+
+Save the file and start the program again. Missing folders are created
+automatically.
+
 ## Configuration
 
 All settings live in `config.json` next to the .exe. Restart the program after
@@ -105,8 +104,8 @@ changing them.
 
 ```json
 {
-    "input_folder": "C:\\Users\\YourName\\Documents\\audio",
-    "output_folder": "C:\\Users\\YourName\\Documents\\transcripts",
+    "input_folder": "C:\\Users\\YourName\\Documents\\mp3",
+    "output_folder": "C:\\Users\\YourName\\Documents\\transcribed",
     "model_size": "small",
     "language": "auto",
     "include_timestamps": false,
@@ -121,8 +120,8 @@ changing them.
 
 | Setting | Default | Description |
 |---|---|---|
-| `input_folder` | — | Folder to read audio/video files from. Subfolders are not scanned. |
-| `output_folder` | — | Folder to save `.txt` transcripts to. Created if missing. |
+| `input_folder` | `Documents\mp3` | Folder to read audio/video files from. Subfolders are not scanned. Created if missing. |
+| `output_folder` | `Documents\transcribed` | Folder to save `.txt` transcripts to. Created if missing. |
 | `model_size` | `small` | `tiny`, `base`, `small`, `medium` or `large-v3`. Larger is more accurate but slower and uses more memory. See [Choosing a model](#choosing-a-model). |
 | `language` | `auto` | `auto` detects the language. Or force one with a code, e.g. `en` (English) or `tl` (Tagalog). |
 | `include_timestamps` | `false` | `true` writes lines like `[00:01:23 → 00:01:30] text here`. |
