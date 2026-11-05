@@ -1,0 +1,22 @@
+# Python virtual environment and caches (recreated by build.bat)
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# PyInstaller output (recreate with build.bat)
+build/
+dist/
+*.spec
+
+# Files the app creates next to the .exe at runtime
+config.json
+transcriber.log
+models/
+*.part
+
+# Editor / OS clutter
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

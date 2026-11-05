@@ -1,0 +1,11 @@
+# Speech-to-text engine. Pulls in ctranslate2, PyAV (audio decoding),
+# onnxruntime (silence filter), tokenizers and huggingface_hub (model download).
+faster-whisper>=1.1.0
+numpy
+
+# PyAV 15+ removed an option faster-whisper still uses, which makes every
+# file fail with "unexpected keyword argument 'metadata_errors'".
+av>=11,<15
+
+# Used only to build the .exe
+pyinstaller>=6.10
