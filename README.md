@@ -1,84 +1,112 @@
-# MP3 Transcriber
+# Audio Transcriber
 
-Transcribes every audio file in a folder to a `.txt` file using
-[faster-whisper](https://github.com/SYSTRAN/faster-whisper), then keeps
-watching the folder and transcribes new files as they appear.
+A Windows tool that automatically turns audio and video files into text.
+Drop a file into a folder and a `.txt` transcript appears in another folder.
+It runs fully offline on your own PC, using
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper) (an optimized
+version of OpenAI's Whisper speech-recognition model). No account, API key or
+subscription is needed.
 
-- Input: `C:\Users\Gelo\Documents\mp3` (only this folder, no subfolders)
-- Output: `C:\Users\Gelo\Documents\transcribed` (created automatically)
-- `meeting1.mp3` → `meeting1.txt`
-- Works with `.mp3`, and also `.mp4`, `.m4a`, `.wav`, `.flac`, `.ogg`,
-  `.opus`, `.webm`, `.aac`, `.wma`, `.mkv`, `.mov` (audio is taken from videos).
-- Files that already have a `.txt` are skipped, so re-running is safe.
-- Original files are never modified, moved or deleted.
+## Features
 
-## FFmpeg is not needed
+- **Hands-free:** processes everything in the input folder, then keeps
+  watching it and transcribes new files as they arrive.
+- **Many formats:** `.mp3`, `.mp4`, `.m4a`, `.wav`, `.flac`, `.ogg`, `.opus`,
+  `.webm`, `.aac`, `.wma`, `.mkv`, `.mov`. Audio is extracted from video files
+  automatically.
+- **Safe:** original files are only read, never modified, moved or deleted.
+  Files that already have a transcript are skipped, so re-running is safe.
+- **Robust:** waits until a file has finished copying before starting, and a
+  corrupted file is logged and skipped without stopping the program.
+- **Accurate on music and speech:** uses the file name as a hint for names and
+  song titles, and removes lines Whisper is known to invent (such as
+  *"Thanks for watching!"*).
+- **Works on modest hardware:** runs on a normal CPU; uses an NVIDIA GPU
+  automatically if one is set up.
+- **No FFmpeg install needed:** audio decoding is built in (via PyAV).
 
-faster-whisper decodes audio with **PyAV**, which ships its own copy of the
-FFmpeg libraries inside the Python package (and so inside the .exe). You do
-not need to install FFmpeg or put it on your PATH.
+## Requirements
 
-## Build the .exe
+- Windows 10 or 11 (64-bit)
+- 4 GB RAM minimum (8 GB+ recommended for the `medium` model)
+- About 1–3 GB free disk space (program + one model)
+- Internet only for the first run, to download the speech model
+- To build from source: **64-bit Python 3.11 or 3.12**
 
-1. Install **64-bit Python 3.11 or 3.12** from python.org and tick
-   **"Add python.exe to PATH"** during setup.
-2. Double-click **`build.bat`**.
-   It creates a `.venv`, installs `requirements.txt` and runs PyInstaller.
-3. You get:
-   - **`dist\MP3Transcriber\`**: the program folder (~250 MB). Run
-     `MP3Transcriber.exe` inside it. The `_internal` folder next to it holds
-     Python and the AI libraries; keep the two together.
-   - **`dist\MP3Transcriber.zip`** (~100 MB): a clean copy of that folder
-     for other PCs, without your models or settings.
+## Getting started
 
-Rebuilding only replaces the program files. Your `models`, `config.json`
-and `transcriber.log` in `dist\MP3Transcriber\` are kept.
+### 1. Build the program
 
-**Why a folder and not a single .exe?** A single-file .exe unpacks ~250 MB
-into the Temp folder every time it starts, and if it's closed abruptly that
-copy is left behind (it piled up to 1.7 GB during testing). The folder
-version starts faster, leaves nothing in Temp, and antivirus programs are
-less likely to flag it.
+1. Install **64-bit Python 3.11 or 3.12** from
+   [python.org](https://www.python.org/downloads/). During setup, tick
+   **"Add python.exe to PATH"**.
+2. Download this repository (**Code → Download ZIP**, then unzip), or clone it:
+   ```bash
+   git clone https://github.com/pixsu/audio-transcriber.git
+   ```
+3. Double-click **`build.bat`**. It creates a virtual environment, installs the
+   dependencies and builds the program. This takes a few minutes.
 
-The PyInstaller command used (also in `build.bat`, which builds into
-`build\staging` first and then copies the result into `dist`):
+When it finishes you will have:
 
-```bat
-pyinstaller --noconfirm --clean --onedir --console --name MP3Transcriber ^
-    --collect-all faster_whisper --collect-all ctranslate2 ^
-    --collect-all onnxruntime --collect-all av --collect-all tokenizers ^
-    --copy-metadata faster-whisper --copy-metadata huggingface_hub ^
-    --copy-metadata tokenizers --copy-metadata tqdm --copy-metadata numpy ^
-    transcriber.py
-```
+| Output | What it is |
+|---|---|
+| `dist\MP3Transcriber\` | The program folder. Run `MP3Transcriber.exe` inside it. |
+| `dist\MP3Transcriber.zip` | A clean copy of that folder to give to other PCs (no Python needed there). |
 
-Why these flags: `faster_whisper` contains the Silero VAD model file used by
-`vad_filter`; `ctranslate2`, `onnxruntime`, `av` and `tokenizers` contain DLLs
-and compiled modules PyInstaller won't find on its own; `--copy-metadata`
-keeps package version info that some libraries check at runtime.
+> Keep `MP3Transcriber.exe` and the `_internal` folder next to it together.
+> To move the program, move the whole `MP3Transcriber` folder.
 
-## Run
+### 2. Configure your folders
 
-Double-click `dist\MP3Transcriber\MP3Transcriber.exe`. To put it somewhere
-else, move the **whole `MP3Transcriber` folder**, not just the .exe. On
-another PC, unzip `MP3Transcriber.zip` and run the .exe inside. Tip: right-click
-the .exe → *Send to → Desktop (create shortcut)* for easy access.
+1. Double-click `dist\MP3Transcriber\MP3Transcriber.exe` once. It creates a
+   `config.json` file next to the .exe. (It may then stop with an error about
+   the output folder because the default paths don't exist on your PC. That's
+   expected; press Enter to close it.)
+2. Open `config.json` in Notepad.
+3. Set `input_folder` (where you put audio files) and `output_folder` (where
+   transcripts are saved) to folders on your PC. **The default paths point to
+   the original author's PC, so change them.** Use double backslashes:
+   ```json
+   "input_folder": "C:\\Users\\YourName\\Documents\\audio",
+   "output_folder": "C:\\Users\\YourName\\Documents\\transcripts",
+   ```
+4. Save the file.
 
-- **First run** downloads the model (small ≈ 500 MB) into a `models` folder
-  next to the .exe. Later runs work **offline**.
-- `config.json` and `transcriber.log` are also created next to the .exe.
-- Press **Ctrl+C** or close the window to stop.
+The output folder is created automatically. The input folder must exist.
 
-To run without building: `.venv\Scripts\python.exe transcriber.py`
+### 3. Run it
 
-## Change settings
+1. Double-click `MP3Transcriber.exe`.
+2. On the first run it downloads the speech model (`small` ≈ 480 MB,
+   `medium` ≈ 1.5 GB) into a `models` folder next to the .exe. After that it
+   works offline.
+3. Drop audio or video files into your input folder. The console shows the
+   progress:
+   ```text
+   Found 2 audio files
+   [1/2] Transcribing meeting1.mp3...
+      Detected language: en (98% sure), audio length 00:42:10
+   Done → meeting1.txt (took 312s)
+   Watching C:\Users\YourName\Documents\audio for new audio files every 10s...
+   ```
+4. Each file gets a transcript with the same name: `meeting1.mp3` →
+   `meeting1.txt`.
+5. To stop, press **Ctrl+C** or close the window.
 
-Edit `config.json` next to the .exe, then restart the program:
+Tip: right-click `MP3Transcriber.exe` → *Send to → Desktop (create shortcut)*.
+To start it with Windows, put that shortcut in the Startup folder (press
+`Win + R` and type `shell:startup`).
+
+## Configuration
+
+All settings live in `config.json` next to the .exe. Restart the program after
+changing them.
 
 ```json
 {
-    "input_folder": "C:\\Users\\Gelo\\Documents\\mp3",
-    "output_folder": "C:\\Users\\Gelo\\Documents\\transcribed",
+    "input_folder": "C:\\Users\\YourName\\Documents\\audio",
+    "output_folder": "C:\\Users\\YourName\\Documents\\transcripts",
     "model_size": "small",
     "language": "auto",
     "include_timestamps": false,
@@ -91,45 +119,156 @@ Edit `config.json` next to the .exe, then restart the program:
 }
 ```
 
-| Setting | Values |
+| Setting | Default | Description |
+|---|---|---|
+| `input_folder` | — | Folder to read audio/video files from. Subfolders are not scanned. |
+| `output_folder` | — | Folder to save `.txt` transcripts to. Created if missing. |
+| `model_size` | `small` | `tiny`, `base`, `small`, `medium` or `large-v3`. Larger is more accurate but slower and uses more memory. See [Choosing a model](#choosing-a-model). |
+| `language` | `auto` | `auto` detects the language. Or force one with a code, e.g. `en` (English) or `tl` (Tagalog). |
+| `include_timestamps` | `false` | `true` writes lines like `[00:01:23 → 00:01:30] text here`. |
+| `vad_filter` | `true` | Skips silence. Good for speech; **set to `false` for music** (see below). |
+| `use_filename_hint` | `true` | Passes the cleaned file name (e.g. `Artist Song Title`) to the model to help it spell names and titles. |
+| `file_types` | (list above) | File extensions to pick up. |
+| `poll_interval_seconds` | `10` | How often to check the input folder for new files. |
+| `device` | `auto` | `auto` uses an NVIDIA GPU if available, otherwise the CPU. Force with `cuda` or `cpu`. |
+
+### Recommended settings
+
+| Use case | `model_size` | `vad_filter` | Notes |
+|---|---|---|---|
+| Meetings, lectures, podcasts | `small` or `medium` | `true` | Silence is skipped, which saves time. |
+| Songs and music | `medium` | `false` | The silence filter treats singing over music as "not speech" and would drop most of the song. |
+| Low-end PC | `base` or `small` | either | `small` is a good balance of speed and accuracy. |
+
+If the silence filter removes more than half of a file, the program prints a
+warning suggesting `"vad_filter": false`.
+
+### Choosing a model
+
+Speed on a 4-minute song, measured on an Intel Core i7-12700F (CPU only):
+
+| Model | Download size | Time | Accuracy |
+|---|---|---|---|
+| `small` | ~480 MB | ~30 s | Good. Best choice for low-end PCs. |
+| `medium` | ~1.5 GB | ~70–100 s | Better, especially for lyrics and non-English audio. |
+
+Slower CPUs will take proportionally longer. `large-v3-turbo` is not
+recommended for music: in testing it produced placeholder text instead of
+lyrics.
+
+### Tips for better accuracy
+
+- **Name files descriptively.** `Artist - Song Title.mp3` gives the model a
+  useful hint. Downloader junk such as `ytmp4`, `savetube` or
+  `(Official Video)` is removed automatically.
+- **Use `medium`** if your PC can handle it.
+- **Set `language`** if all your files are in one language and auto-detect
+  gets it wrong.
+- **Never force `"en"` for non-English audio.** Whisper may translate it into
+  English instead of transcribing it.
+
+## Language support
+
+Whisper supports about 99 languages. Philippine languages in particular:
+
+| Language | Support | Notes |
+|---|---|---|
+| English | Excellent | |
+| Tagalog / Filipino | Good | Works with `auto` or `"tl"`. Use `medium` for best results. Taglish (mixed Tagalog and English) works with `auto`. |
+| Cebuano / Bisaya, Ilocano, Hiligaynon, Waray | Partial | Not in Whisper's language list. Expect a rough draft: shared and borrowed words are usually correct, but language-specific words may be misspelled. Try both `auto` and `"tl"` and keep whichever reads better. |
+
+## GPU acceleration (optional)
+
+With `"device": "auto"`, an NVIDIA GPU is used automatically if the required
+libraries are present. The startup message shows what was picked:
+`Model loaded on GPU (CUDA, float16)` or `Model loaded on CPU (int8)`.
+
+The GPU needs **CUDA 12 cuBLAS** and **cuDNN 9** plus an up-to-date NVIDIA
+driver. They are not bundled with the program. Either:
+
+- **Easiest:** download the CUDA 12 cuBLAS + cuDNN pack from
+  [Purfview/whisper-standalone-win](https://github.com/Purfview/whisper-standalone-win/releases/tag/libs)
+  and extract the `.dll` files next to `MP3Transcriber.exe` (or into a `cuda`
+  folder next to it), **or**
+- install the [CUDA Toolkit 12](https://developer.nvidia.com/cuda-downloads)
+  and [cuDNN 9](https://developer.nvidia.com/cudnn) and add their `bin`
+  folders to your PATH.
+
+The required files are `cublas64_12.dll`, `cublasLt64_12.dll` and the
+`cudnn*64_9.dll` files. If they are missing, the program falls back to the CPU
+and keeps working.
+
+## Troubleshooting
+
+| Problem | Solution |
 |---|---|
-| `model_size` | `tiny`, `base`, `small`, `medium`, `large-v3`. Bigger = more accurate but slower. **`small`** for low-end PCs (about 8× faster than real time on a modern CPU); **`medium`** for best accuracy on a decent PC (about 3× faster than real time, ~2 GB RAM). Avoid `large-v3-turbo` for songs: in testing it wrote "To be continued..." instead of lyrics |
-| `use_filename_hint` | `true` passes the cleaned file name (e.g. `Olivia Rodrigo drop dead`) to the model as a hint, which helps it get names and song titles right. Junk like `ytmp4`, `savetube`, `(Official Video)` is removed first |
-| `file_types` | Which file extensions to pick up |
-| `language` | `"auto"` to detect, or a code like `"en"` or `"tl"` (Tagalog) |
-| `include_timestamps` | `true` gives lines like `[00:01:23 → 00:01:30] text here` |
-| `vad_filter` | `true` skips silence (best for talks/meetings). Set `false` for **songs**: the filter treats singing over music as "not speech" and drops most of it |
-| `poll_interval_seconds` | How often to check for new files |
-| `device` | `"auto"`, `"cuda"` (GPU) or `"cpu"` |
+| A file is ignored | Check its real extension: Windows hides extensions by default, so a `.mp4` can look like an MP3. Enable *View → Show → File name extensions* in Explorer and make sure the extension is in `file_types`. |
+| Only part of a song is transcribed | Set `"vad_filter": false`. |
+| `config.json is not valid JSON` | Paths need double backslashes (`C:\\Users\\...`), and every line except the last needs a comma. |
+| A file failed | The error is shown in the console and saved in `transcriber.log`. Failed files are not retried unless the file changes; restart the program to retry. |
+| Very slow | Use a smaller `model_size`, or set up a GPU. |
+| `GPU could not be used` | The CUDA libraries are missing; see [GPU acceleration](#gpu-acceleration-optional). |
+| Antivirus warning | Unsigned programs built with PyInstaller are sometimes flagged by mistake. Building it yourself from this source avoids trusting a third-party binary. |
+| Transcript has odd lines in instrumental parts | Whisper sometimes guesses words during music. Common fake lines are removed automatically; others can be deleted by hand. |
 
-Note: backslashes in paths must be doubled (`\\`) in JSON.
+Logs are written to `transcriber.log` next to the .exe.
 
-Whisper sometimes invents lines like *"Thanks for watching!"* or *"To be
-continued..."* during instrumental parts (it learned them from YouTube
-subtitles). The program removes lines that are exactly one of these.
+## Running from source
 
-If a file fails (corrupted or unreadable), the error is logged and the
-program moves on. It won't retry that file unless the file changes; to force
-a retry, restart the program.
+After running `build.bat` once (to create `.venv`), you can run the script
+directly without building:
 
-## Using an NVIDIA GPU
+```bat
+.venv\Scripts\python.exe transcriber.py
+```
 
-With `"device": "auto"` the program uses the GPU (`float16`) if it can,
-otherwise the CPU (`int8`). The startup message says which one it picked.
-If it says *"GPU could not be used"*, the CUDA libraries are missing.
+When run this way, `config.json`, `transcriber.log` and `models\` are created
+next to `transcriber.py`.
 
-Current faster-whisper versions need **CUDA 12 cuBLAS** and **cuDNN 9**
-(plus an up-to-date NVIDIA driver). These are **not** bundled in the .exe.
-Pick one way to add them:
+## Project structure
 
-- **Easiest:** download the cuBLAS + cuDNN DLL pack for CUDA 12 from
-  [Purfview/whisper-standalone-win releases](https://github.com/Purfview/whisper-standalone-win/releases/tag/libs)
-  and extract the `.dll` files **next to `MP3Transcriber.exe`** (or into a
-  `cuda` folder next to it).
-- **Or** install the [CUDA Toolkit 12](https://developer.nvidia.com/cuda-downloads)
-  and [cuDNN 9](https://developer.nvidia.com/cudnn) and make sure their `bin`
-  folders are on your PATH.
+```text
+transcriber.py     The application
+requirements.txt   Python dependencies
+build.bat          One-click build script (venv + install + PyInstaller)
+README.md          This file
+.gitignore         Keeps build output, models and personal settings out of git
+.gitattributes     Keeps build.bat in Windows line endings
+```
 
-The needed files are `cublas64_12.dll`, `cublasLt64_12.dll` and the
-`cudnn*64_9.dll` files. Then restart the program; it should print
-`Model loaded on GPU (CUDA, float16)`.
+Generated (not in git): `.venv\`, `build\`, `dist\`, and at runtime
+`config.json`, `transcriber.log` and `models\`.
+
+## Build details
+
+`build.bat` builds into `build\staging` first and then copies the program files
+into `dist\MP3Transcriber`, so rebuilding never deletes your downloaded
+models, settings or log. It runs:
+
+```bat
+pyinstaller --noconfirm --clean --onedir --console --name MP3Transcriber ^
+    --distpath build\staging ^
+    --collect-all faster_whisper --collect-all ctranslate2 ^
+    --collect-all onnxruntime --collect-all av --collect-all tokenizers ^
+    --copy-metadata faster-whisper --copy-metadata huggingface_hub ^
+    --copy-metadata tokenizers --copy-metadata tqdm --copy-metadata numpy ^
+    transcriber.py
+```
+
+- `--collect-all` bundles the DLLs, compiled modules and data files (such as
+  the Silero VAD model) that PyInstaller cannot detect on its own.
+- `--copy-metadata` keeps package version information some libraries check at
+  runtime.
+- `--onedir` (a folder) is used instead of `--onefile`: a single-file .exe
+  unpacks itself to the Temp folder on every start, which is slower and leaves
+  large leftovers behind if the program is closed abruptly.
+- PyAV is pinned below version 15 in `requirements.txt`, because newer versions
+  break faster-whisper's audio loading.
+
+## Acknowledgements
+
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) by SYSTRAN
+- [Whisper](https://github.com/openai/whisper) by OpenAI
+- [CTranslate2](https://github.com/OpenNMT/CTranslate2),
+  [PyAV](https://github.com/PyAV-Org/PyAV) and
+  [PyInstaller](https://pyinstaller.org/)
