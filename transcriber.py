@@ -1,9 +1,9 @@
 """
-MP3 Transcriber
-===============
+Audio Transcriber
+=================
 
-Watches a folder for audio files (.mp3, .mp4, .m4a, .wav, ...) and transcribes each one to a .txt file
-using faster-whisper.
+Watches a folder for audio files (.mp3, .mp4, .m4a, .wav, ...) and
+transcribes each one to a .txt file using faster-whisper.
 
 How it works:
   1. Reads settings from config.json (created with defaults if missing).
@@ -25,6 +25,11 @@ import sys
 import time
 import traceback
 from pathlib import Path
+
+# Bump this for each release (and add an entry to CHANGELOG.md). The release
+# build checks that the git tag (e.g. v1.0.0) matches it.
+__version__ = "1.0.0"
+APP_NAME = "Audio Transcriber"
 
 
 class UserError(Exception):
@@ -603,7 +608,7 @@ class Transcriber:
 def main() -> None:
     setup_logging()
     log.info("=" * 60)
-    log.info("MP3 Transcriber starting")
+    log.info("%s v%s starting", APP_NAME, __version__)
 
     config = load_config()
     input_dir = Path(config["input_folder"])

@@ -36,7 +36,22 @@ subscription is needed.
 
 ## Getting started
 
-### 1. Build the program
+### 1. Get the program
+
+#### Option A: Download (easiest, no Python needed)
+
+1. Go to the [**Releases**](https://github.com/pixsu/audio-transcriber/releases)
+   page and download `AudioTranscriber-<version>-windows-x64.zip` from the
+   latest release.
+2. Unzip it anywhere (e.g. `Documents\AudioTranscriber`).
+3. Continue with [Run it](#2-run-it). The program is
+   `MP3Transcriber\MP3Transcriber.exe` inside the unzipped folder.
+
+> The program is not code-signed, so Windows may show *"Windows protected
+> your PC"* the first time. Click **More info → Run anyway**. Every release is
+> built automatically from this repository's source code by GitHub Actions.
+
+#### Option B: Build from source
 
 1. Install **64-bit Python 3.11 or 3.12** from
    [python.org](https://www.python.org/downloads/). During setup, tick
@@ -240,6 +255,9 @@ requirements.txt        Top-level Python dependencies (loose versions)
 requirements-lock.txt   Exact tested versions, used by build.bat
 build.bat               One-click build script (venv + install + PyInstaller)
 README.md               This file
+CHANGELOG.md            What changed in each version
+LICENSE                 MIT license
+.github/workflows/      Automatic build, test and release on GitHub
 .gitignore              Keeps build output, models and personal settings out of git
 .gitattributes          Keeps build.bat in Windows line endings
 ```
@@ -278,6 +296,36 @@ pyinstaller --noconfirm --clean --onedir --console --name MP3Transcriber ^
   the app, then regenerate the lock file with
   `.venv\Scripts\python.exe -m pip freeze > requirements-lock.txt`
   (remove the `pip` and `setuptools` lines).
+
+## Releases (for maintainers)
+
+Builds run automatically on GitHub (free) using
+[`.github/workflows/build.yml`](.github/workflows/build.yml):
+
+- **Every push to `main`** that changes the app builds it, runs a quick test
+  (the built .exe transcribes a short test file), and keeps the zip for 30
+  days under *Actions → the run → Artifacts*.
+- **Publishing a release:**
+  1. Bump `__version__` in `transcriber.py` (e.g. `1.0.1`).
+  2. Add a section for it at the top of `CHANGELOG.md`.
+  3. Commit and push, then tag and push the tag:
+     ```bash
+     git tag v1.0.1
+     git push origin v1.0.1
+     ```
+  The workflow checks the tag matches `__version__`, builds and tests the
+  program, and creates a GitHub Release with
+  `AudioTranscriber-1.0.1-windows-x64.zip` attached and the changelog section
+  as release notes.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
+The release download bundles third-party components under their own licenses,
+including faster-whisper and CTranslate2 (MIT), PyAV (BSD), FFmpeg libraries
+inside PyAV (LGPL), ONNX Runtime (MIT) and Python (PSF). The Whisper models
+downloaded on first run are released by OpenAI under the MIT License.
 
 ## Acknowledgements
 
