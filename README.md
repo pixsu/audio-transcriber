@@ -1,14 +1,16 @@
 # MP3 Transcriber
 
-Transcribes every `.mp3` in a folder to a `.txt` file using
+Transcribes every audio file in a folder to a `.txt` file using
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper), then keeps
-watching the folder and transcribes new MP3s as they appear.
+watching the folder and transcribes new files as they appear.
 
 - Input: `C:\Users\Gelo\Documents\mp3` (only this folder, no subfolders)
 - Output: `C:\Users\Gelo\Documents\transcribed` (created automatically)
 - `meeting1.mp3` → `meeting1.txt`
-- MP3s that already have a `.txt` are skipped, so re-running is safe.
-- Original MP3s are never modified, moved or deleted.
+- Works with `.mp3`, and also `.mp4`, `.m4a`, `.wav`, `.flac`, `.ogg`,
+  `.opus`, `.webm`, `.aac`, `.wma`, `.mkv`, `.mov` (audio is taken from videos).
+- Files that already have a `.txt` are skipped, so re-running is safe.
+- Original files are never modified, moved or deleted.
 
 ## FFmpeg is not needed
 
@@ -22,13 +24,27 @@ not need to install FFmpeg or put it on your PATH.
    **"Add python.exe to PATH"** during setup.
 2. Double-click **`build.bat`**.
    It creates a `.venv`, installs `requirements.txt` and runs PyInstaller.
-3. The result is **`dist\MP3Transcriber.exe`** (~150–250 MB, since it bundles
-   Python and the AI libraries).
+3. You get:
+   - **`dist\MP3Transcriber\`**: the program folder (~250 MB). Run
+     `MP3Transcriber.exe` inside it. The `_internal` folder next to it holds
+     Python and the AI libraries; keep the two together.
+   - **`dist\MP3Transcriber.zip`** (~100 MB): a clean copy of that folder
+     for other PCs, without your models or settings.
 
-The PyInstaller command used (also in `build.bat`):
+Rebuilding only replaces the program files. Your `models`, `config.json`
+and `transcriber.log` in `dist\MP3Transcriber\` are kept.
+
+**Why a folder and not a single .exe?** A single-file .exe unpacks ~250 MB
+into the Temp folder every time it starts, and if it's closed abruptly that
+copy is left behind (it piled up to 1.7 GB during testing). The folder
+version starts faster, leaves nothing in Temp, and antivirus programs are
+less likely to flag it.
+
+The PyInstaller command used (also in `build.bat`, which builds into
+`build\staging` first and then copies the result into `dist`):
 
 ```bat
-pyinstaller --noconfirm --clean --onefile --console --name MP3Transcriber ^
+pyinstaller --noconfirm --clean --onedir --console --name MP3Transcriber ^
     --collect-all faster_whisper --collect-all ctranslate2 ^
     --collect-all onnxruntime --collect-all av --collect-all tokenizers ^
     --copy-metadata faster-whisper --copy-metadata huggingface_hub ^
@@ -43,7 +59,10 @@ keeps package version info that some libraries check at runtime.
 
 ## Run
 
-Double-click `MP3Transcriber.exe` (you can move it to any folder first).
+Double-click `dist\MP3Transcriber\MP3Transcriber.exe`. To put it somewhere
+else, move the **whole `MP3Transcriber` folder**, not just the .exe. On
+another PC, unzip `MP3Transcriber.zip` and run the .exe inside. Tip: right-click
+the .exe → *Send to → Desktop (create shortcut)* for easy access.
 
 - **First run** downloads the model (small ≈ 500 MB) into a `models` folder
   next to the .exe. Later runs work **offline**.
@@ -64,6 +83,9 @@ Edit `config.json` next to the .exe, then restart the program:
     "language": "auto",
     "include_timestamps": false,
     "vad_filter": true,
+    "use_filename_hint": true,
+    "file_types": [".mp3", ".mp4", ".m4a", ".wav", ".flac", ".ogg", ".opus",
+                   ".webm", ".aac", ".wma", ".mkv", ".mov"],
     "poll_interval_seconds": 10,
     "device": "auto"
 }
@@ -71,7 +93,9 @@ Edit `config.json` next to the .exe, then restart the program:
 
 | Setting | Values |
 |---|---|
-| `model_size` | `tiny`, `base`, `small`, `medium`, `large-v3` (bigger = more accurate but slower) |
+| `model_size` | `tiny`, `base`, `small`, `medium`, `large-v3`. Bigger = more accurate but slower. **`small`** for low-end PCs (about 8× faster than real time on a modern CPU); **`medium`** for best accuracy on a decent PC (about 3× faster than real time, ~2 GB RAM). Avoid `large-v3-turbo` for songs: in testing it wrote "To be continued..." instead of lyrics |
+| `use_filename_hint` | `true` passes the cleaned file name (e.g. `Olivia Rodrigo drop dead`) to the model as a hint, which helps it get names and song titles right. Junk like `ytmp4`, `savetube`, `(Official Video)` is removed first |
+| `file_types` | Which file extensions to pick up |
 | `language` | `"auto"` to detect, or a code like `"en"` or `"tl"` (Tagalog) |
 | `include_timestamps` | `true` gives lines like `[00:01:23 → 00:01:30] text here` |
 | `vad_filter` | `true` skips silence (best for talks/meetings). Set `false` for **songs**: the filter treats singing over music as "not speech" and drops most of it |
@@ -79,6 +103,10 @@ Edit `config.json` next to the .exe, then restart the program:
 | `device` | `"auto"`, `"cuda"` (GPU) or `"cpu"` |
 
 Note: backslashes in paths must be doubled (`\\`) in JSON.
+
+Whisper sometimes invents lines like *"Thanks for watching!"* or *"To be
+continued..."* during instrumental parts (it learned them from YouTube
+subtitles). The program removes lines that are exactly one of these.
 
 If a file fails (corrupted or unreadable), the error is logged and the
 program moves on. It won't retry that file unless the file changes; to force

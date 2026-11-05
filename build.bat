@@ -1,7 +1,8 @@
 @echo off
 REM ============================================================
 REM  One-click build: creates a venv, installs requirements,
-REM  and builds dist\MP3Transcriber.exe with PyInstaller.
+REM  and builds the program folder dist\MP3Transcriber\
+REM  (plus dist\MP3Transcriber.zip for copying to other PCs).
 REM ============================================================
 setlocal
 cd /d "%~dp0"
@@ -23,11 +24,14 @@ echo Installing requirements...
 ".venv\Scripts\python.exe" -m pip install --upgrade pip || goto :error
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt --only-binary=av || goto :error
 
-echo Building the .exe (this takes a few minutes)...
+REM Build into a staging folder first. PyInstaller wipes its output folder,
+REM and we don't want that to delete your models, config.json or log.
+echo Building (this takes a few minutes)...
 ".venv\Scripts\python.exe" -m PyInstaller ^
     --noconfirm --clean ^
-    --onefile --console ^
+    --onedir --console ^
     --name MP3Transcriber ^
+    --distpath build\staging ^
     --collect-all faster_whisper ^
     --collect-all ctranslate2 ^
     --collect-all onnxruntime ^
@@ -40,11 +44,27 @@ echo Building the .exe (this takes a few minutes)...
     --copy-metadata numpy ^
     transcriber.py || goto :error
 
+REM Copy the program into dist\MP3Transcriber. Only the program files are
+REM replaced; models\, config.json and transcriber.log are left alone.
+echo Updating dist\MP3Transcriber ...
+robocopy "build\staging\MP3Transcriber\_internal" "dist\MP3Transcriber\_internal" /MIR /NFL /NDL /NJH /NJS /NP >nul
+if errorlevel 8 goto :error
+copy /y "build\staging\MP3Transcriber\MP3Transcriber.exe" "dist\MP3Transcriber\" >nul || goto :error
+
+REM Zip a clean copy (no models or personal settings) for other PCs.
+REM (tar.exe is built into Windows 10/11; -a picks the format from ".zip")
+echo Creating dist\MP3Transcriber.zip ...
+if exist "dist\MP3Transcriber.zip" del "dist\MP3Transcriber.zip"
+tar -a -c -f "dist\MP3Transcriber.zip" -C "build\staging" MP3Transcriber
+if not exist "dist\MP3Transcriber.zip" goto :error
+
 echo.
 echo ============================================================
-echo  Build finished: %~dp0dist\MP3Transcriber.exe
-echo  Copy it anywhere and double-click it. config.json, the
-echo  log and the models folder are created next to the .exe.
+echo  Build finished:
+echo    %~dp0dist\MP3Transcriber\MP3Transcriber.exe
+echo  To use on another PC, copy dist\MP3Transcriber.zip, unzip it
+echo  and double-click MP3Transcriber.exe inside the folder.
+echo  config.json, the log and models\ are created next to the .exe.
 echo ============================================================
 pause
 exit /b 0

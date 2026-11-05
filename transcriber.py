@@ -2,22 +2,23 @@
 MP3 Transcriber
 ===============
 
-Watches a folder for .mp3 files and transcribes each one to a .txt file
+Watches a folder for audio files (.mp3, .mp4, .m4a, .wav, ...) and transcribes each one to a .txt file
 using faster-whisper.
 
 How it works:
   1. Reads settings from config.json (created with defaults if missing).
   2. Loads the Whisper model once (GPU if available, otherwise CPU).
-  3. Transcribes every MP3 in the input folder that has no .txt yet.
-  4. Keeps watching the input folder and transcribes new MP3s as they arrive.
+  3. Transcribes every audio file in the input folder that has no .txt yet.
+  4. Keeps watching the input folder and transcribes new files as they arrive.
 
-The original MP3 files are only ever READ. They are never changed, moved,
+The original audio files are only ever READ. They are never changed, moved,
 or deleted.
 """
 
 import json
 import logging
 import os
+import re
 import sys
 import time
 import traceback
@@ -75,6 +76,12 @@ DEFAULT_CONFIG = {
     # Skip silence. Good for speech recordings, but it also throws away
     # singing over music - set to false for songs.
     "vad_filter": True,
+    # Give the model the cleaned-up file name (e.g. "Olivia Rodrigo - drop
+    # dead") as a hint. Helps it spell names and song titles correctly.
+    "use_filename_hint": True,
+    # Which files to pick up. Audio is pulled out of video files automatically.
+    "file_types": [".mp3", ".mp4", ".m4a", ".wav", ".flac", ".ogg", ".opus",
+                   ".webm", ".aac", ".wma", ".mkv", ".mov"],
     "poll_interval_seconds": 10,
     # "auto" = GPU if available, else CPU. Or force "cuda" or "cpu".
     "device": "auto",
@@ -127,6 +134,11 @@ def load_config() -> dict:
     config["device"] = str(config.get("device") or "auto").strip().lower()
     config["include_timestamps"] = bool(config["include_timestamps"])
     config["vad_filter"] = bool(config["vad_filter"])
+    config["use_filename_hint"] = bool(config["use_filename_hint"])
+    # Normalise to lowercase ".ext" so "MP4" or "mp4" both work.
+    config["file_types"] = {
+        "." + str(ext).strip().lower().lstrip(".") for ext in config["file_types"]
+    }
     return config
 
 
@@ -235,17 +247,69 @@ def format_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def transcribe_file(model, mp3_path: Path, txt_path: Path, config: dict) -> None:
-    """Transcribe one MP3 and write the .txt file.
+# Words that often appear in downloaded file names but aren't part of the
+# song/recording title, e.g. "katy-perry-thinking-of-you-ytmp4.savetube.vip".
+FILENAME_JUNK = {
+    "official", "video", "audio", "lyrics", "lyric", "music", "mv", "hd", "hq",
+    "visualizer", "savetube", "vip", "y2mate", "com", "net", "download", "feat", "ft",
+}
+
+
+def filename_hint(path: Path):
+    """'katy-perry-thinking-of-you-ytmp4.savetube.vip.mp4' -> 'katy perry thinking of you'
+
+    Returns None if nothing useful is left (e.g. 'meeting1.mp3').
+    """
+    words = []
+    for word in re.split(r"[\s\-_.()\[\]{}]+", path.stem):
+        lower = word.lower()
+        if not word or lower in FILENAME_JUNK:
+            continue
+        # Skip codes like "ytmp4" or "1080p" (letters mixed with digits).
+        if any(c.isdigit() for c in word) and not word.isdigit():
+            continue
+        words.append(word)
+    hint = " ".join(words)[:100]
+    # An all-lowercase hint makes the model write the whole transcript in
+    # lowercase, so capitalise it ("katy perry" -> "Katy Perry").
+    if hint == hint.lower():
+        hint = hint.title()
+    return hint if len(hint) >= 3 else None
+
+
+# Lines Whisper is known to invent during music or silence (it learned them
+# from YouTube subtitles). A segment that is exactly one of these is dropped.
+HALLUCINATIONS = {
+    "thanks for watching", "thank you for watching", "to be continued",
+    "please subscribe", "subscribe to my channel", "like and subscribe",
+    "please like and subscribe",
+}
+
+
+def is_hallucination(text: str) -> bool:
+    norm = " ".join(re.sub(r"[^\w\s]", "", text.lower()).split())
+    return norm in HALLUCINATIONS or norm.startswith("subtitles by") or "amara org" in norm
+
+
+def transcribe_file(model, audio_path: Path, txt_path: Path, config: dict) -> None:
+    """Transcribe one audio/video file and write the .txt file.
 
     The text is first written to a temporary ".part" file and renamed at the
     end. That way a half-finished transcript (e.g. if the program is closed)
     never looks like a finished one.
     """
+    hint = filename_hint(audio_path) if config["use_filename_hint"] else None
+    if hint:
+        log.info('   Using hint from file name: "%s"', hint)
+
     segments, info = model.transcribe(
-        str(mp3_path),
+        str(audio_path),
         language=config["language"],
         vad_filter=config["vad_filter"],  # skip silence
+        hotwords=hint,
+        # Check several 30s chunks when detecting the language, not just the
+        # first one (song intros are often instrumental).
+        language_detection_segments=4,
     )
 
     if config["language"] is None:
@@ -265,7 +329,7 @@ def transcribe_file(model, mp3_path: Path, txt_path: Path, config: dict) -> None
     last_report = time.time()
     for seg in segments:  # segments are produced as the audio is processed
         text = seg.text.strip()
-        if not text:
+        if not text or is_hallucination(text):
             continue
         if config["include_timestamps"]:
             lines.append(f"[{format_timestamp(seg.start)} → {format_timestamp(seg.end)}] {text}")
@@ -289,18 +353,18 @@ def transcribe_file(model, mp3_path: Path, txt_path: Path, config: dict) -> None
 # Folder scanning
 # ---------------------------------------------------------------------------
 
-def list_mp3s(input_dir: Path) -> list:
-    """All .mp3 files directly in input_dir (no subfolders), sorted by name."""
+def list_audio_files(input_dir: Path, file_types: set) -> list:
+    """Audio/video files directly in input_dir (no subfolders), sorted by name."""
     if not input_dir.is_dir():
         return []
     files = [p for p in input_dir.iterdir()
-             if p.is_file() and p.suffix.lower() == ".mp3"]
+             if p.is_file() and p.suffix.lower() in file_types]
     return sorted(files, key=lambda p: p.name.lower())
 
 
-def output_path_for(mp3_path: Path, output_dir: Path) -> Path:
+def output_path_for(audio_path: Path, output_dir: Path) -> Path:
     """meeting1.mp3 -> <output_dir>/meeting1.txt"""
-    return output_dir / (mp3_path.stem + ".txt")
+    return output_dir / (audio_path.stem + ".txt")
 
 
 def file_signature(path: Path):
@@ -339,33 +403,33 @@ class Transcriber:
         # Last seen size of files waiting to finish copying: name -> size.
         self.pending_sizes = {}
 
-    def needs_work(self, mp3: Path) -> bool:
-        """True if this MP3 has no .txt yet and hasn't already failed."""
-        if output_path_for(mp3, self.output_dir).exists():
+    def needs_work(self, audio: Path) -> bool:
+        """True if this file has no .txt yet and hasn't already failed."""
+        if output_path_for(audio, self.output_dir).exists():
             return False
-        if mp3.name in self.failed and self.failed[mp3.name] == file_signature(mp3):
+        if audio.name in self.failed and self.failed[audio.name] == file_signature(audio):
             return False
         return True
 
     def process_batch(self, files: list) -> None:
         """Transcribe files one at a time. One bad file never stops the rest."""
         total = len(files)
-        for i, mp3 in enumerate(files, start=1):
-            txt = output_path_for(mp3, self.output_dir)
-            log.info("[%d/%d] Transcribing %s...", i, total, mp3.name)
+        for i, audio in enumerate(files, start=1):
+            txt = output_path_for(audio, self.output_dir)
+            log.info("[%d/%d] Transcribing %s...", i, total, audio.name)
             start = time.time()
             try:
-                transcribe_file(self.model, mp3, txt, self.config)
+                transcribe_file(self.model, audio, txt, self.config)
                 log.info("Done → %s (took %.0fs)", txt.name, time.time() - start)
-                self.failed.pop(mp3.name, None)
+                self.failed.pop(audio.name, None)
             except KeyboardInterrupt:
                 raise
             except Exception as e:
-                log.error("FAILED %s: %s (skipping it)", mp3.name, e)
+                log.error("FAILED %s: %s (skipping it)", audio.name, e)
                 # Full details go to the log file only.
                 with open(LOG_PATH, "a", encoding="utf-8") as f:
                     f.write(traceback.format_exc())
-                self.failed[mp3.name] = file_signature(mp3)
+                self.failed[audio.name] = file_signature(audio)
                 # Clean up any leftover partial output.
                 part = txt.with_name(txt.name + ".part")
                 if part.exists():
@@ -376,11 +440,11 @@ class Transcriber:
 
     def first_pass(self) -> None:
         """Transcribe everything already in the input folder."""
-        all_mp3s = list_mp3s(self.input_dir)
-        todo = [p for p in all_mp3s if self.needs_work(p)]
-        skipped = len(all_mp3s) - len(todo)
+        all_files = list_audio_files(self.input_dir, self.config["file_types"])
+        todo = [p for p in all_files if self.needs_work(p)]
+        skipped = len(all_files) - len(todo)
 
-        log.info("Found %d MP3 file%s", len(all_mp3s), "" if len(all_mp3s) == 1 else "s")
+        log.info("Found %d audio file%s", len(all_files), "" if len(all_files) == 1 else "s")
         if skipped:
             log.info("Skipping %d already transcribed", skipped)
         if not todo:
@@ -400,7 +464,7 @@ class Transcriber:
     def watch_once(self) -> None:
         """One check of the input folder. A new file is only transcribed once
         its size has stayed the same for 2 checks in a row."""
-        waiting = [p for p in list_mp3s(self.input_dir) if self.needs_work(p)]
+        waiting = [p for p in list_audio_files(self.input_dir, self.config["file_types"]) if self.needs_work(p)]
         waiting_names = {p.name for p in waiting}
 
         # Forget files that disappeared or got done.
@@ -421,14 +485,14 @@ class Transcriber:
                 self.pending_sizes[p.name] = size
 
         if ready:
-            log.info("Found %d new MP3 file%s", len(ready), "" if len(ready) == 1 else "s")
+            log.info("Found %d new audio file%s", len(ready), "" if len(ready) == 1 else "s")
             self.process_batch(ready)
-            log.info("Watching %s for new MP3 files... (Ctrl+C to stop)", self.input_dir)
+            log.info("Watching %s for new audio files... (Ctrl+C to stop)", self.input_dir)
 
     def run_forever(self) -> None:
         self.first_pass()
         interval = self.config["poll_interval_seconds"]
-        log.info("Watching %s for new MP3 files every %ds... (Ctrl+C to stop)",
+        log.info("Watching %s for new audio files every %ds... (Ctrl+C to stop)",
                  self.input_dir, interval)
         while True:
             time.sleep(interval)
