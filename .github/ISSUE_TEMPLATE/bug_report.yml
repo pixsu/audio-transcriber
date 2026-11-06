@@ -1,0 +1,62 @@
+name: Bug report
+description: Something doesn't work as expected
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. Please don't attach
+        recordings or transcripts that contain private or confidential content.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        1. Dropped a 1-hour MP3 into the Inbox
+        2. It stopped at 40% with "..."
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown next to the name at the top of the window (or Menu → About).
+      placeholder: "1.6.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is it installed?
+      options:
+        - Installer (AudioTranscriber-Setup)
+        - Portable zip
+        - Running from source
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 23H2"
+  - type: input
+    id: file
+    attributes:
+      label: File type and length (if it's about a specific file)
+      placeholder: "MP3, 1 h 05 min, 94 MB"
+  - type: textarea
+    id: settings
+    attributes:
+      label: Settings
+      description: Mode, Quality, Language and anything you changed.
+      placeholder: "Fast, Medium, Auto-detect, Skip silence on"
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        Menu → Open log file, and paste the lines from around the problem.
+        Remove anything private (file names, folder paths) if needed.
+      render: text

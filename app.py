@@ -1107,14 +1107,14 @@ def build_app_class():
             holder = ctk.CTkFrame(box, fg_color="transparent")
             bar = ctk.CTkFrame(holder, fg_color="transparent")
             bar.pack(fill="x", padx=8, pady=(0, 6))
-            self.search_var = tk.StringVar()
-            self.search_var.trace_add("write", lambda *a: setattr(self, "search_typed",
-                                                                  time.time()))
+            # (No textvariable: with one, CTkEntry never shows its grey hint text.)
             self.search_entry = ctk.CTkEntry(
-                bar, textvariable=self.search_var, height=34, corner_radius=8,
+                bar, height=34, corner_radius=8,
                 placeholder_text="Search by name or by words in the transcript...")
             self.search_entry.pack(side="left", fill="x", expand=True)
-            self.search_entry.bind("<Escape>", lambda e: self.search_var.set(""))
+            self.search_entry.bind("<KeyRelease>",
+                                   lambda e: setattr(self, "search_typed", time.time()))
+            self.search_entry.bind("<Escape>", self.clear_search)
             self.date_filter = Select(bar, values=list(DATE_FILTERS),
                                       command=lambda v: self.view_keys.pop("Completed", None))
             self.date_filter.configure(width=150)
@@ -1828,7 +1828,7 @@ def build_app_class():
                 data = s["queue"]
             elif tab == "Completed":
                 # Apply what was typed once typing pauses (not on every key).
-                typed = self.search_var.get().strip().lower()
+                typed = self.search_entry.get().strip().lower()
                 if typed != self.search_query and time.time() - self.search_typed > 0.3:
                     self.search_query = typed
                 data = self.filtered_completed()
@@ -1884,6 +1884,11 @@ def build_app_class():
                                    f"Take {name} out of the queue?\n\nThe file stays in the "
                                    "Inbox; you can retry it from the Issues tab.", parent=self):
                 self.engine.skip_waiting(name)
+
+        def clear_search(self, event=None):
+            self.search_entry.delete(0, "end")
+            self.search_typed = 0.0
+            self.focus_set()  # lets the grey hint text show again
 
         def guess_source(self, path):
             """For transcripts made before the index existed: match by name."""

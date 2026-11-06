@@ -4,6 +4,11 @@ All notable changes to this project are listed here.
 Versions follow [Semantic Versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH` (breaking change / new feature / bug fix).
 
+## [Unreleased]
+
+### Fixed
+- The search box in the Completed tab now shows its grey hint text.
+
 ## [1.6.0] - 2026-11-06
 
 ### Added

@@ -1,11 +1,77 @@
-# Audio Transcriber
+<h1 align="center">Audio Transcriber</h1>
 
-A Windows tool that automatically turns audio and video files into text.
-Drop a file into a folder and a `.txt` transcript appears in another folder.
-It runs fully offline on your own PC, using
-[faster-whisper](https://github.com/SYSTRAN/faster-whisper) (an optimized
-version of OpenAI's Whisper speech-recognition model). No account, API key or
-subscription is needed.
+<p align="center">
+  <b>Turn audio and video files into text automatically &mdash; offline, free, on your own Windows PC.</b><br>
+  Drop files into a folder, get <code>.txt</code> transcripts back. English, Filipino/Tagalog, Taglish and more.
+</p>
+
+<p align="center">
+  <a href="https://github.com/pixsu/audio-transcriber/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/pixsu/audio-transcriber?label=release&color=1f6aa5"></a>
+  <a href="https://github.com/pixsu/audio-transcriber/actions/workflows/build.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/pixsu/audio-transcriber/build.yml?branch=main"></a>
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d6">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/pixsu/audio-transcriber?color=2e9e4f"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/pixsu/audio-transcriber/releases/latest"><b>&#11015;&nbsp; Download the installer</b></a>
+  &nbsp;&middot;&nbsp; <a href="#getting-started">Getting started</a>
+  &nbsp;&middot;&nbsp; <a href="#configuration">Settings</a>
+  &nbsp;&middot;&nbsp; <a href="#troubleshooting">Troubleshooting</a>
+</p>
+
+<p align="center">
+  <img src="docs/images/main-window.png" alt="Audio Transcriber transcribing a file, with the queue and settings panel" width="900">
+</p>
+
+## Why Audio Transcriber?
+
+- **Free and private.** Runs entirely on your PC using
+  [faster-whisper](https://github.com/SYSTRAN/faster-whisper), an optimized
+  version of OpenAI's Whisper. No account, API key, subscription or upload.
+- **Hands-free.** Watches a folder and transcribes new files as they arrive,
+  newest first, in the background (system tray).
+- **Built for large archives.** Several PCs can share one network folder and
+  split thousands of files between them, without ever doing a file twice.
+- **Easy to use.** One window with live progress, a searchable list of
+  finished transcripts, and simple switches instead of config files.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/completed.png" alt="Completed tab with file details and word counts"></td>
+    <td width="50%"><img src="docs/images/search.png" alt="Searching inside transcripts"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Completed</b> &mdash; every transcript with its source file's format, duration, size and word count</sub></td>
+    <td align="center"><sub><b>Search</b> &mdash; find transcripts by name or by words inside them</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/settings-confirm.png" alt="Settings with an Apply confirmation"></td>
+    <td width="50%" valign="top">
+      <br>
+      <b>Settings you can't get wrong</b><br><br>
+      Changes wait for <b>Apply</b>. Bigger decisions, such as a new model
+      that needs a 3&nbsp;GB download, new folders or starting with Windows,
+      explain what will happen and ask first.
+    </td>
+  </tr>
+</table>
+
+## Contents
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Getting started](#getting-started)
+- [Configuration](#configuration)
+- [Large archives and long recordings](#large-archives-and-long-recordings)
+- [Running on several PCs](#running-on-several-pcs)
+- [Language support](#language-support)
+- [GPU acceleration](#gpu-acceleration-optional)
+- [Troubleshooting](#troubleshooting)
+- [Updates](#updates)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Features
 
@@ -385,8 +451,12 @@ build.bat               One-click build script (venv + install + PyInstaller + i
 installer.iss           Inno Setup script for AudioTranscriber-Setup.exe
 README.md               This file
 CHANGELOG.md            What changed in each version
+CONTRIBUTING.md         How to run from source and send changes
+SECURITY.md             How to report security problems; what data is used
 LICENSE                 MIT license
+docs/images/            Screenshots used in this README
 .github/workflows/      Automatic build, test and release on GitHub
+.github/ISSUE_TEMPLATE/ Bug report and feature request forms
 .gitignore              Keeps build output, models and personal settings out of git
 .gitattributes          Keeps build.bat in Windows line endings
 ```
@@ -468,6 +538,15 @@ Builds run automatically on GitHub (free) using
 To build the installer locally, install the free
 [Inno Setup 6](https://jrsoftware.org/isinfo.php); `build.bat` then also
 creates `dist\AudioTranscriber-Setup.exe` (it skips this step otherwise).
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for how to run the app from source and
+send changes, and use the
+[issue templates](https://github.com/pixsu/audio-transcriber/issues/new/choose)
+to report a problem or suggest a feature. Security issues: see
+[SECURITY.md](SECURITY.md).
 
 ## License
 

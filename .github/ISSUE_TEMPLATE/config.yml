@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and how-to
+    url: https://github.com/pixsu/audio-transcriber#readme
+    about: Most questions are answered in the README (settings, languages, GPU, several PCs, troubleshooting).
+  - name: Report a security problem
+    url: https://github.com/pixsu/audio-transcriber/security/advisories/new
+    about: Please report security issues privately, not as a public issue.
