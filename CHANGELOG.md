@@ -4,6 +4,23 @@ All notable changes to this project are listed here.
 Versions follow [Semantic Versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH` (breaking change / new feature / bug fix).
 
+## [1.6.0] - 2026-11-06
+
+### Added
+- **Installer** (`AudioTranscriber-Setup-<version>.exe`): Start Menu entry,
+  optional desktop shortcut and "start when I log in". No administrator
+  rights needed. Installing a newer version closes the running program first
+  and keeps your settings and downloaded models. Uninstall from Windows
+  Settings.
+- **Update notice:** once a day the program checks GitHub for a newer
+  release and shows a notice with Download, What's new and Later. Also
+  **Menu → Check for updates**, and a **Check for updates** switch in
+  Settings.
+- **Search in the Completed tab:** find transcripts by file name or by words
+  inside them (the matching sentence is shown), plus a date filter (Today,
+  Last 7 days, Last 30 days). Searches every transcript, not just the newest
+  100.
+
 ## [1.5.0] - 2026-11-06
 
 ### Added

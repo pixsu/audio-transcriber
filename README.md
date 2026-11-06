@@ -47,14 +47,33 @@ subscription is needed.
 
 ### 1. Get the program
 
-#### Option A: Download (easiest, no Python needed)
+#### Option A: Installer (easiest, no Python needed)
 
 1. Go to the [**Releases**](https://github.com/pixsu/audio-transcriber/releases)
-   page and download `AudioTranscriber-<version>-windows-x64.zip` from the
-   latest release.
-2. Unzip it anywhere (e.g. `Documents\AudioTranscriber`).
-3. Continue with [Run it](#2-run-it). The program is
-   `AudioTranscriber\AudioTranscriber.exe` inside the unzipped folder.
+   page and download `AudioTranscriber-Setup-<version>.exe` from the latest
+   release.
+2. Run it and click through. It needs **no administrator rights**: it
+   installs for your Windows account into
+   `%LOCALAPPDATA%\Programs\Audio Transcriber`, adds a Start Menu entry and
+   (optionally) a desktop shortcut, and can start the program when you log in.
+3. Start **Audio Transcriber** from the Start Menu and continue with
+   [Run it](#2-run-it).
+
+**Updating:** run the newer installer. It closes the running program first,
+replaces the program files and keeps your settings, log and downloaded
+models. The program also tells you when a new version is out (see
+[Updates](#updates)).
+
+**Uninstalling:** *Settings → Apps → Installed apps → Audio Transcriber →
+Uninstall*. This removes the program, its settings and its downloaded
+models. Your Inbox and Transcripts folders are never touched.
+
+#### Option A2: Portable zip
+
+Download `AudioTranscriber-<version>-windows-x64.zip` instead, unzip it
+anywhere (e.g. a USB drive or a shared folder) and double-click
+`AudioTranscriber\AudioTranscriber.exe`. Settings and models are kept in that
+folder.
 
 > The program is not code-signed, so Windows may show *"Windows protected
 > your PC"* the first time. Click **More info → Run anyway**. Every release is
@@ -101,7 +120,7 @@ When it finishes you will have:
    | **Top bar** | **Add files**, **Open Inbox**, **Open Transcripts**, and **Menu** (log file, config.json, Retry all, About, Quit). |
    | **Status card** | Ready / Transcribing / Paused / Loading model / Needs attention, files waiting, done today. The current file with its details (format, duration, size, bitrate, mono/stereo, sample rate), a progress bar and time left. **Pause / Resume** and **Skip this file**. If something is wrong (e.g. a folder can't be reached) it says what and shows **Try again**. |
    | **Queue** tab | Files waiting, in the order they will be done, each with its format, duration and size (the status line also shows the total audio waiting). **Do next** moves a file to the front; **Skip** takes it out of the queue. New files show up within seconds, even during a long file. |
-   | **Completed** tab | Finished transcripts (from any PC sharing the folder) with the original file's format, duration and size, the word count, **Open** and **Show in folder**. |
+   | **Completed** tab | A search box (file name or any words inside the transcript, with the matching sentence shown) and a date filter (Today, Last 7 days, Last 30 days). Finished transcripts (from any PC sharing the folder) with the original file's format, duration and size, the word count, **Open** and **Show in folder**. |
    | **Issues** tab | Files that failed or were skipped, with the reason. **Retry** or **Retry all**. |
    | **Activity** tab | A live log; warnings in amber, errors in red. |
    | **Settings** panel | Easy switches; see [Configuration](#configuration). Changes wait until you click **Apply** (or **Discard** to undo them). **Reset to defaults** selects the default values for everything except your folders. |
@@ -362,7 +381,8 @@ app.py                  The window, tray icon and settings panel
 transcriber.py          The transcription engine (also runs on its own in a console)
 requirements.txt        Top-level Python dependencies (loose versions)
 requirements-lock.txt   Exact tested versions, used by build.bat
-build.bat               One-click build script (venv + install + PyInstaller)
+build.bat               One-click build script (venv + install + PyInstaller + installer)
+installer.iss           Inno Setup script for AudioTranscriber-Setup.exe
 README.md               This file
 CHANGELOG.md            What changed in each version
 LICENSE                 MIT license
@@ -411,6 +431,19 @@ file to keep in the repository.
   `.venv\Scripts\python.exe -m pip freeze > requirements-lock.txt`
   (remove the `pip` and `setuptools` lines).
 
+## Updates
+
+Once a day the program checks the
+[Releases](https://github.com/pixsu/audio-transcriber/releases) page. When
+there is a newer version, a blue notice appears at the top of the window
+with **Download** (the installer), **What's new** and **Later** (hides the
+notice until the next version). You can also check any time with
+**Menu → Check for updates**, or turn the daily check off with the
+**Check for updates** switch in Settings.
+
+The check only reads the public release information; nothing about you or
+your files is sent. It needs internet access and a public repository.
+
 ## Releases (for maintainers)
 
 Builds run automatically on GitHub (free) using
@@ -429,8 +462,12 @@ Builds run automatically on GitHub (free) using
      ```
   The workflow checks the tag matches `__version__`, builds and tests the
   program, and creates a GitHub Release with
-  `AudioTranscriber-1.0.1-windows-x64.zip` attached and the changelog section
-  as release notes.
+  `AudioTranscriber-Setup-1.0.1.exe` and `AudioTranscriber-1.0.1-windows-x64.zip`
+  attached and the changelog section as release notes.
+
+To build the installer locally, install the free
+[Inno Setup 6](https://jrsoftware.org/isinfo.php); `build.bat` then also
+creates `dist\AudioTranscriber-Setup.exe` (it skips this step otherwise).
 
 ## License
 

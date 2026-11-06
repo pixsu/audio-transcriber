@@ -63,10 +63,27 @@ if exist "dist\AudioTranscriber.zip" del "dist\AudioTranscriber.zip"
 tar -a -c -f "dist\AudioTranscriber.zip" -C "build\staging" AudioTranscriber
 if not exist "dist\AudioTranscriber.zip" goto :error
 
+REM Build the installer (dist\AudioTranscriber-Setup.exe) if Inno Setup 6 is
+REM installed. It's free: https://jrsoftware.org/isinfo.php
+set "ISCC="
+if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
+if not defined ISCC goto :no_installer
+for /f "tokens=3" %%v in ('findstr /b "__version__" transcriber.py') do set "APPVER=%%~v"
+echo Creating dist\AudioTranscriber-Setup.exe (version %APPVER%) ...
+"%ISCC%" /Q /DAppVersion=%APPVER% installer.iss || goto :error
+set "INSTALLER_MSG=   Installer: %~dp0dist\AudioTranscriber-Setup.exe"
+goto :after_installer
+:no_installer
+set "INSTALLER_MSG=   (Installer skipped: Inno Setup 6 is not installed.)"
+:after_installer
+
 echo.
 echo ============================================================
 echo  Build finished:
 echo    %~dp0dist\AudioTranscriber\AudioTranscriber.exe
+echo %INSTALLER_MSG%
 echo  To use on another PC, copy dist\AudioTranscriber.zip, unzip it
 echo  and double-click AudioTranscriber.exe inside the folder.
 echo  config.json, the log and models\ are created next to the .exe.

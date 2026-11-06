@@ -58,9 +58,12 @@ DEVICE_CHOICES = {
     "NVIDIA GPU": "cuda",
 }
 MODE_CHOICES = {"Fast": "fast", "Accurate": "accurate"}
+# Completed tab date filter -> days back (0 = since midnight, None = all)
+DATE_FILTERS = {"Any time": None, "Today": 0, "Last 7 days": 7, "Last 30 days": 30}
 # Settings the window manages; "Reset to defaults" restores these (not folders).
 WINDOW_SETTINGS = ("speed", "model_size", "language", "order", "device",
-                   "vad_filter", "include_timestamps", "use_filename_hint")
+                   "vad_filter", "include_timestamps", "use_filename_hint",
+                   "check_for_updates")
 
 # Friendly names for the Apply confirmation and the log.
 SETTING_NAMES = {
@@ -68,6 +71,7 @@ SETTING_NAMES = {
     "device": "Device", "vad_filter": "Skip silence", "include_timestamps": "Add timestamps",
     "use_filename_hint": "Use file name as a hint", "input_folder": "Inbox folder",
     "output_folder": "Transcripts folder", "_autostart": "Start with Windows",
+    "check_for_updates": "Check for updates",
 }
 # Changes with bigger effects (a download, folders, Windows start-up) are
 # confirmed in a dialog before they're applied.
@@ -472,6 +476,51 @@ def friendly_error(reason):
     return shorten(first, 120) + "  (see the log file for details)"
 
 
+# --- Update check -------------------------------------------------------------
+
+UPDATE_URL = "https://api.github.com/repos/pixsu/audio-transcriber/releases/latest"
+UPDATE_CHECK_EVERY = 24 * 3600
+
+
+def version_tuple(text):
+    import re
+    return tuple(int(n) for n in re.findall(r"\d+", str(text))[:3])
+
+
+def fetch_latest_release(url=UPDATE_URL):
+    """Ask GitHub for the newest release.
+
+    Returns {"version", "page", "download"}. Raises an error with a
+    plain-English message if it can't be checked.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+    request = urllib.request.Request(url, headers={
+        "User-Agent": f"AudioTranscriber/{T.__version__}",
+        "Accept": "application/vnd.github+json",
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            data = json.load(response)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise RuntimeError("No public release was found. (The GitHub repository "
+                               "must be public for update checks to work.)") from None
+        raise RuntimeError(f"The update server answered with error {e.code}.") from None
+    except (urllib.error.URLError, OSError, ValueError):
+        raise RuntimeError("Couldn't reach the update server. Check the internet "
+                           "connection.") from None
+    version = str(data.get("tag_name", "")).lstrip("vV")
+    download = data.get("html_url", "")
+    for asset in data.get("assets", []):
+        name = asset.get("name", "").lower()
+        if "setup" in name and name.endswith(".exe"):
+            download = asset.get("browser_download_url", download)
+            break
+    return {"version": version, "page": data.get("html_url", ""), "download": download}
+
+
 # --- File details (duration, format, ...) ----------------------------------
 
 COVER_ART_CODECS = {"mjpeg", "png", "bmp", "gif", "webp"}
@@ -506,6 +555,15 @@ def probe_media(path):
     except Exception:
         info["error"] = "details unavailable"
     return info
+
+
+def read_text_lower(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        return {"text": text, "lower": text.lower()}
+    except OSError:
+        return {}
 
 
 def count_words(path):
@@ -649,13 +707,15 @@ def _show_event_name(inbox):
     return f"Local\\AudioTranscriber-show-{T.folder_key(inbox)}"
 
 
-def listen_for_show_requests(inbox, callback):
+def listen_for_event(name, callback):
+    """Call callback() (in a background thread) whenever the named Windows
+    event is signalled by another process."""
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateEventW.restype = ctypes.c_void_p
     kernel32.CreateEventW.argtypes = (ctypes.c_void_p, ctypes.c_bool, ctypes.c_bool,
                                       ctypes.c_wchar_p)
     kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
-    handle = kernel32.CreateEventW(None, False, False, _show_event_name(inbox))
+    handle = kernel32.CreateEventW(None, False, False, name)
     if not handle:
         return
 
@@ -664,7 +724,44 @@ def listen_for_show_requests(inbox, callback):
             if kernel32.WaitForSingleObject(handle, 0xFFFFFFFF) == 0:
                 callback()
 
-    threading.Thread(target=wait, name="show-listener", daemon=True).start()
+    threading.Thread(target=wait, name="event-listener", daemon=True).start()
+
+
+def listen_for_show_requests(inbox, callback):
+    listen_for_event(_show_event_name(inbox), callback)
+
+
+# --- Closing the program from the installer ---------------------------------
+# The installer runs "AudioTranscriber.exe --quit" before replacing files.
+# That signals this event; the running window quits cleanly (a file in
+# progress is simply started again next time).
+
+RUNNING_MUTEX = "AudioTranscriberAppRunning"
+QUIT_EVENT = "Local\\AudioTranscriber-quit"
+
+
+def ask_running_copies_to_quit(timeout=30):
+    """--quit: ask every running window to close, and wait until they have."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenEventW.restype = ctypes.c_void_p
+    kernel32.OpenEventW.argtypes = (ctypes.c_uint32, ctypes.c_bool, ctypes.c_wchar_p)
+    kernel32.OpenMutexW.restype = ctypes.c_void_p
+    kernel32.OpenMutexW.argtypes = (ctypes.c_uint32, ctypes.c_bool, ctypes.c_wchar_p)
+    kernel32.SetEvent.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    EVENT_MODIFY_STATE, SYNCHRONIZE = 0x0002, 0x00100000
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        running = kernel32.OpenMutexW(SYNCHRONIZE, False, RUNNING_MUTEX)
+        if not running:
+            return True  # nothing running any more
+        kernel32.CloseHandle(running)
+        event = kernel32.OpenEventW(EVENT_MODIFY_STATE, False, QUIT_EVENT)
+        if event:
+            kernel32.SetEvent(event)
+            kernel32.CloseHandle(event)
+        time.sleep(0.5)
+    return False
 
 
 def ask_running_copy_to_show(inbox):
@@ -854,6 +951,9 @@ def build_app_class():
             self.details_stamp = 0          # details version the lists were drawn with
             self.details_checked = 0.0
             self.source_of = {}             # transcript name (lowercase) -> audio name
+            self.update_info = None         # newest release, if newer than this one
+            self.search_typed = 0.0         # when the search box last changed
+            self.search_query = ""          # the search actually applied
             self.just_applied = False       # showing "Applied" for a few seconds
 
             handler = QueueLogHandler(self.log_lines)
@@ -878,6 +978,7 @@ def build_app_class():
             self._build_header()
             left = ctk.CTkFrame(self, fg_color="transparent")
             left.grid(row=1, column=0, sticky="nsew", padx=(16, 8), pady=(0, 8))
+            self._build_update_banner(left)
             self._build_status_card(left)
             self._build_tabs(left)
             self._build_settings()
@@ -899,6 +1000,7 @@ def build_app_class():
             if start_hidden:
                 self.withdraw()
             self.after(200, self.tick)
+            self.after(8000, self.schedule_update_check)
 
         # =================================================================
         # Layout
@@ -930,12 +1032,30 @@ def build_app_class():
             self.menu.add_command(label="Open log file", command=lambda: open_path(T.LOG_PATH))
             self.menu.add_command(label="Edit config.json (advanced)", command=self.edit_config)
             self.menu.add_separator()
+            self.menu.add_command(label="Check for updates", command=self.check_updates_now)
             self.menu.add_command(label="About", command=self.show_about)
             self.menu.add_command(label="Quit", accelerator="Ctrl+Q", command=self.quit_app)
+
+        def _build_update_banner(self, parent):
+            self.banner = ctk.CTkFrame(parent, corner_radius=12, border_width=1,
+                                       fg_color=("#e8f1fb", "#1d2b3a"),
+                                       border_color=("#9cc3ea", "#2f5378"))
+            self.banner_text = ctk.CTkLabel(self.banner, text="", anchor="w",
+                                            font=font(13, "bold"))
+            self.banner_text.pack(side="left", padx=16, pady=12)
+            ghost_button(self.banner, "Later", self.dismiss_update, width=64, height=30
+                         ).pack(side="right", padx=(4, 12))
+            ghost_button(self.banner, "What's new", lambda: self.open_url(
+                (self.update_info or {}).get("page")), width=96, height=30
+                         ).pack(side="right", padx=4)
+            ctk.CTkButton(self.banner, text="Download", width=96, height=30,
+                          command=lambda: self.open_url((self.update_info or {}).get("download"))
+                          ).pack(side="right", padx=4)
 
         def _build_status_card(self, parent):
             card = ctk.CTkFrame(parent, corner_radius=12)
             card.pack(fill="x", pady=(0, 12))
+            self.status_card = card
             card.grid_columnconfigure(0, weight=1)
 
             top = ctk.CTkFrame(card, fg_color="transparent")
@@ -977,10 +1097,36 @@ def build_app_class():
             self.tabs.set("Queue")
             self.tabs.pack(anchor="w", padx=12, pady=(12, 8))
 
-            self.tab_frames = {}
+            self.tab_frames = {}   # what is shown for each tab
+            self.list_frames = {}  # where each tab's rows go
             for name in ("Queue", "Completed", "Issues"):
                 frame = ctk.CTkScrollableFrame(box, fg_color="transparent")
-                self.tab_frames[name] = frame
+                self.tab_frames[name] = self.list_frames[name] = frame
+
+            # Completed: a search bar above the list.
+            holder = ctk.CTkFrame(box, fg_color="transparent")
+            bar = ctk.CTkFrame(holder, fg_color="transparent")
+            bar.pack(fill="x", padx=8, pady=(0, 6))
+            self.search_var = tk.StringVar()
+            self.search_var.trace_add("write", lambda *a: setattr(self, "search_typed",
+                                                                  time.time()))
+            self.search_entry = ctk.CTkEntry(
+                bar, textvariable=self.search_var, height=34, corner_radius=8,
+                placeholder_text="Search by name or by words in the transcript...")
+            self.search_entry.pack(side="left", fill="x", expand=True)
+            self.search_entry.bind("<Escape>", lambda e: self.search_var.set(""))
+            self.date_filter = Select(bar, values=list(DATE_FILTERS),
+                                      command=lambda v: self.view_keys.pop("Completed", None))
+            self.date_filter.configure(width=150)
+            self.date_filter.set("Any time")
+            self.date_filter.pack(side="left", padx=(8, 0))
+            self.result_text = ctk.CTkLabel(holder, text="", text_color=GRAY, font=font(11),
+                                            anchor="w")
+            self.result_text.pack(fill="x", padx=12)
+            self.list_frames["Completed"].destroy()
+            self.list_frames["Completed"] = ctk.CTkScrollableFrame(holder, fg_color="transparent")
+            self.list_frames["Completed"].pack(fill="both", expand=True)
+            self.tab_frames["Completed"] = holder
             self.activity = ctk.CTkTextbox(box, font=ctk.CTkFont(family="Consolas", size=11),
                                            wrap="word", state="disabled", fg_color="transparent")
             self.activity.tag_config("warn", foreground=AMBER)
@@ -1109,7 +1255,10 @@ def build_app_class():
                                           command=self.on_autostart)
             if exe_command() is None:
                 self.autostart.configure(state="disabled")
-            ctk.CTkFrame(card, height=10, fg_color="transparent").grid(row=6, column=0)
+            self.switches["check_for_updates"] = self._switch(
+                card, 6, "Check for updates", "check_for_updates",
+                "Once a day, shows a notice when a new version is out.")
+            ctk.CTkFrame(card, height=10, fg_color="transparent").grid(row=8, column=0)
 
             row = ctk.CTkFrame(panel, fg_color="transparent")
             row.pack(fill="x", pady=(14, 4))
@@ -1164,7 +1313,8 @@ def build_app_class():
                 return str(value).strip().lower()
             if key in ("input_folder", "output_folder"):
                 return str(Path(value))
-            if key in ("vad_filter", "include_timestamps", "use_filename_hint"):
+            if key in ("vad_filter", "include_timestamps", "use_filename_hint",
+                       "check_for_updates"):
                 return bool(value)
             return value
 
@@ -1431,6 +1581,72 @@ def build_app_class():
                 self.engine.retry()
                 log.info("Retrying all files in Issues")
 
+        # --- updates ---------------------------------------------------------
+
+        def open_url(self, url):
+            if url:
+                import webbrowser
+                webbrowser.open(url)
+
+        def schedule_update_check(self):
+            """Check now (in the background) and again every 24 hours."""
+            if self.config_raw().get("check_for_updates", True):
+                self.check_updates_background()
+            self.after(UPDATE_CHECK_EVERY * 1000, self.schedule_update_check)
+
+        def check_updates_background(self, manual=False):
+            def work():
+                try:
+                    info, error = fetch_latest_release(), None
+                except Exception as e:
+                    info, error = None, str(e)
+                self.ui_calls.put(lambda: self.on_update_result(info, error, manual))
+            threading.Thread(target=work, name="update-check", daemon=True).start()
+
+        def check_updates_now(self):
+            self.check_updates_background(manual=True)
+
+        def on_update_result(self, info, error, manual):
+            newer = bool(info and version_tuple(info["version"]) > version_tuple(T.__version__))
+            if error:
+                log.info("Update check: %s", error)
+            if newer:
+                self.update_info = info
+                dismissed = self.config_raw().get("dismissed_update")
+                if manual or dismissed != info["version"]:
+                    self.show_banner()
+                if not manual:
+                    log.info("Version %s is available", info["version"])
+            if manual:
+                if error:
+                    messagebox.showwarning("Check for updates", error, parent=self)
+                elif newer:
+                    messagebox.showinfo("Update available",
+                                        f"Version {info['version']} is available (you have "
+                                        f"{T.__version__}).\n\nClick Download in the blue "
+                                        "notice to get it.", parent=self)
+                else:
+                    messagebox.showinfo("Check for updates",
+                                        f"You have the latest version ({T.__version__}).",
+                                        parent=self)
+
+        def show_banner(self):
+            info = self.update_info
+            self.banner_text.configure(
+                text=f"Version {info['version']} is available  "
+                     f"(you have {T.__version__})")
+            if not self.banner.winfo_ismapped():
+                self.banner.pack(fill="x", pady=(0, 12), before=self.status_card)
+
+        def dismiss_update(self):
+            """Hide the notice until an even newer version comes out."""
+            if self.update_info:
+                try:
+                    T.update_config({"dismissed_update": self.update_info["version"]})
+                except Exception:
+                    pass
+            self.banner.pack_forget()
+
         def show_about(self):
             messagebox.showinfo(
                 f"About {T.APP_NAME}",
@@ -1611,10 +1827,14 @@ def build_app_class():
                 build = self._build_queue_rows
                 data = s["queue"]
             elif tab == "Completed":
-                key = (tuple((p.name, int(m)) for m, p in self.completed[:100]),
-                       int(time.time() // 30), self.details_stamp)
+                # Apply what was typed once typing pauses (not on every key).
+                typed = self.search_var.get().strip().lower()
+                if typed != self.search_query and time.time() - self.search_typed > 0.3:
+                    self.search_query = typed
+                data = self.filtered_completed()
+                key = (tuple((p.name, int(m)) for m, p, _ in data), self.search_query,
+                       self.date_filter.get(), int(time.time() // 30), self.details_stamp)
                 build = self._build_completed_rows
-                data = self.completed[:100]
             elif tab == "Issues":
                 key = tuple(sorted(s["issues"].items()))
                 build = self._build_issue_rows
@@ -1623,7 +1843,7 @@ def build_app_class():
                 return
             if self.view_keys.get(tab) != key:
                 self.view_keys[tab] = key
-                frame = self.tab_frames[tab]
+                frame = self.list_frames[tab]
                 for child in frame.winfo_children():
                     child.destroy()
                 build(frame, data)
@@ -1665,19 +1885,92 @@ def build_app_class():
                                    "Inbox; you can retry it from the Issues tab.", parent=self):
                 self.engine.skip_waiting(name)
 
+        def guess_source(self, path):
+            """For transcripts made before the index existed: match by name."""
+            if not self.engine.inbox:
+                return None
+            for ext in self.config_raw().get("file_types", []):
+                if (self.engine.inbox / (path.stem + ext)).exists():
+                    self.source_of[path.name.lower()] = path.stem + ext
+                    return path.stem + ext
+            return None
+
+        def filtered_completed(self):
+            """Transcripts matching the search and date filter: (mtime, path, snippet).
+            Remembered until something changes, as this runs 5 times a second."""
+            memo_key = (self.search_query, self.date_filter.get(), id(self.completed),
+                        self.details_stamp, int(time.time() // 30))
+            if getattr(self, "_filter_memo", (None,))[0] == memo_key:
+                return self._filter_memo[1]
+            result = self._filter_completed()
+            self._filter_memo = (memo_key, result)
+            return result
+
+        def _filter_completed(self):
+            items = self.completed
+            days = DATE_FILTERS.get(self.date_filter.get())
+            if days is not None:
+                if days == 0:
+                    cutoff = datetime.combine(datetime.now().date(), datetime.min.time()
+                                              ).timestamp()
+                else:
+                    cutoff = time.time() - days * 86400
+                items = [(m, p) for m, p in items if m >= cutoff]
+            query = self.search_query
+            total = len(items)
+            if not query:
+                self.result_text.configure(
+                    text=f"{total:,} transcript{'s' if total != 1 else ''}"
+                         + ("  \u00b7  showing the newest 100" if total > 100 else ""))
+                return [(m, p, None) for m, p in items[:100]]
+
+            results, pending = [], 0
+            for mtime, path in items:
+                snippet = None
+                if query in path.name.lower():
+                    results.append((mtime, path, None))
+                else:
+                    text = self.details.get(path, read_text_lower)
+                    if text is None:
+                        pending += 1  # still being read in the background
+                        continue
+                    lower = text.get("lower", "")
+                    pos = lower.find(query)
+                    if pos >= 0:
+                        raw = text["text"] if len(text["text"]) == len(lower) else lower
+                        start = max(0, pos - 50)
+                        piece = " ".join(raw[start:pos + len(query) + 70].split())
+                        snippet = ("\u2026" if start else "") + piece + "\u2026"
+                        results.append((mtime, path, f"\u201c{snippet}\u201d"))
+                if len(results) >= 200:
+                    break
+            label = f"{len(results):,} match{'es' if len(results) != 1 else ''} for \u201c{query}\u201d"
+            if pending:
+                label += f"  \u00b7  searching {pending:,} more..."
+            self.result_text.configure(text=label)
+            return results
+
         def _build_completed_rows(self, frame, items):
+            if not items and (self.search_query or self.date_filter.get() != "Any time"):
+                self._empty(frame, "No matching transcripts",
+                            "Try other words, or a longer time period.")
+                return
             if not items:
                 self._empty(frame, "No transcripts yet",
                             "Finished transcripts from this PC (and any other PC sharing the "
                             "folder) appear here.")
                 return
-            for mtime, path in items:
+            for mtime, path, snippet in items:
                 row = self._row(frame)
                 text = ctk.CTkFrame(row, fg_color="transparent")
                 text.pack(side="left", fill="x", expand=True, padx=(14, 0), pady=6)
                 ctk.CTkLabel(text, text=shorten(path.name, 58), anchor="w").pack(fill="x")
+                if snippet:
+                    ctk.CTkLabel(text, text=snippet, anchor="w", justify="left",
+                                 font=font(11, "normal"), text_color=("gray20", "gray80"),
+                                 wraplength=430).pack(fill="x")
                 parts = []
-                source = self.source_of.get(path.name.lower())
+                source = self.source_of.get(path.name.lower()) or self.guess_source(path)
                 if source and self.engine.inbox:
                     audio = self.engine.inbox / source
                     if audio.exists():
@@ -1744,14 +2037,6 @@ def build_app_class():
                     self.source_of = {k.lower(): v for k, v in json.load(f).items()}
             except (OSError, ValueError):
                 self.source_of = {}
-            # Transcripts made before the index existed: match by name.
-            if self.engine.inbox:
-                for _, path in self.completed[:100]:
-                    if path.name.lower() not in self.source_of:
-                        for ext in self.config_raw().get("file_types", []):
-                            if (self.engine.inbox / (path.stem + ext)).exists():
-                                self.source_of[path.name.lower()] = path.stem + ext
-                                break
 
         def done_today(self):
             today = datetime.now().date()
@@ -1849,9 +2134,15 @@ def build_app_class():
                 except Exception:
                     pass
 
-        def quit_app(self):
+        def quit_app(self, force=False):
+            """Quit. force=True (from the installer) skips the questions."""
             if self.quitting:
                 return
+            if force:
+                self.pending.clear()
+                if self.engine.snapshot()["file"]:
+                    log.info("Closing for an update; the current file will be "
+                             "started again next time.")
             if self.pending:
                 self.show_window()
                 answer = messagebox.askyesnocancel(
@@ -1865,7 +2156,7 @@ def build_app_class():
                     if self.pending:  # cancelled or failed
                         return
             busy = self.engine.snapshot()["file"]
-            if busy:
+            if busy and not force:
                 self.show_window()
                 if not messagebox.askyesno(
                         "Quit Audio Transcriber?",
@@ -1947,12 +2238,20 @@ def run_window(start_hidden):
     engine = Engine(locked_folder=inbox)
     app = build_app_class()(engine, start_hidden=start_hidden)
     listen_for_show_requests(inbox, lambda: app.ui_calls.put(app.show_window))
+    listen_for_event(QUIT_EVENT, lambda: app.ui_calls.put(lambda: app.quit_app(force=True)))
     engine.start()
     app.mainloop()
 
 
 def main():
     args = sys.argv[1:]
+    if "--quit" in args:  # used by the installer and uninstaller
+        sys.exit(0 if ask_running_copies_to_quit() else 1)
+    # Lets --quit (and the installer) see that the program is running.
+    try:
+        main.running_flag = ctypes.windll.kernel32.CreateMutexW(None, False, RUNNING_MUTEX)
+    except Exception:
+        pass
     if "--console" in args:
         run_console()
         return

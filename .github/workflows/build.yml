@@ -17,6 +17,7 @@ on:
     paths:
       - transcriber.py
       - app.py
+      - installer.iss
       - requirements-lock.txt
       - build.bat
       - .github/workflows/build.yml
@@ -53,9 +54,24 @@ jobs:
             exit 1
           }
 
+      - name: Install Inno Setup (for the installer)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
       - name: Build
         shell: cmd
         run: build.bat < nul
+
+      - name: Check the installer was built
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist\AudioTranscriber-Setup.exe)) {
+            Write-Error "dist\AudioTranscriber-Setup.exe is missing"
+            exit 1
+          }
 
       - name: Smoke test (transcribe a short test file with the built .exe)
         shell: pwsh
@@ -80,18 +96,23 @@ jobs:
           }
           Write-Host "Smoke test passed"
 
-      - name: Name the zip
+      - name: Name the downloads
         shell: pwsh
         run: |
           $zip = "AudioTranscriber-$env:VERSION-windows-x64.zip"
+          $setup = "AudioTranscriber-Setup-$env:VERSION.exe"
           Copy-Item dist\AudioTranscriber.zip $zip
+          Copy-Item dist\AudioTranscriber-Setup.exe $setup
           "ZIP=$zip" >> $env:GITHUB_ENV
+          "SETUP=$setup" >> $env:GITHUB_ENV
 
       - name: Upload build (Actions tab → this run → Artifacts)
         uses: actions/upload-artifact@v4
         with:
           name: AudioTranscriber-${{ env.VERSION }}-windows-x64
-          path: ${{ env.ZIP }}
+          path: |
+            ${{ env.ZIP }}
+            ${{ env.SETUP }}
           retention-days: 30
 
       - name: Release notes from CHANGELOG.md
@@ -103,7 +124,7 @@ jobs:
           $pattern = "(?s)## \[$([regex]::Escape($env:VERSION))\][^\n]*\n(.*?)(?=\n## \[|\z)"
           $m = [regex]::Match($text, $pattern)
           $notes = if ($m.Success) { $m.Groups[1].Value.Trim() } else { "See CHANGELOG.md" }
-          $notes += "`n`n### How to install`n1. Download **$env:ZIP** below.`n2. Unzip it and double-click ``AudioTranscriber.exe`` inside the folder.`n3. If Windows shows *Windows protected your PC*, click **More info → Run anyway**.`n`nSee the README for settings."
+          $notes += "`n`n### How to install`n**Recommended:** download **$env:SETUP** below and run it. It adds Start Menu and desktop shortcuts, needs no administrator rights, and installing a newer version keeps your settings and downloaded models.`n`n**Portable:** download **$env:ZIP**, unzip it and double-click ``AudioTranscriber.exe`` inside the folder.`n`nIf Windows shows *Windows protected your PC*, click **More info → Run anyway**. See the README for settings."
           Set-Content -Encoding utf8 release-notes.md $notes
 
       - name: Publish GitHub Release
@@ -112,4 +133,6 @@ jobs:
         with:
           name: Audio Transcriber v${{ env.VERSION }}
           body_path: release-notes.md
-          files: ${{ env.ZIP }}
+          files: |
+            ${{ env.SETUP }}
+            ${{ env.ZIP }}
