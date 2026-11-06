@@ -9,6 +9,11 @@ subscription is needed.
 
 ## Features
 
+- **Simple window:** live status, a progress bar with time left, easy
+  switches for every setting, and a list of recent transcripts to open
+  with one click. No need to edit files by hand.
+- **Runs in the background:** closing the window keeps it running in the
+  system tray, with a Windows notification when each transcript is ready.
 - **Hands-free:** processes everything in the input folder, then keeps
   watching it and transcribes new files as they arrive.
 - **Newest first:** fresh recordings jump ahead of an existing backlog, so
@@ -87,45 +92,62 @@ When it finishes you will have:
    - creates a `config.json` settings file next to the .exe;
    - downloads the speech model (`small` ≈ 480 MB, `medium` ≈ 1.5 GB) into a
      `models` folder next to the .exe. After that it works offline.
-3. Drop audio or video files into the `Inbox` folder. The console shows the
-   progress:
-   ```text
-   Found 2 audio files (0 already transcribed, 2 to do)
-   Transcribing meeting2.mp3... (1 more waiting)
-      Detected language: en (98% sure), audio length 00:42:10
-   Done → meeting2.txt (took 640s)
-   Transcribing meeting1.mp3...
-   Done → meeting1.txt (took 312s)
-   All caught up. Watching C:\Users\YourName\Documents\Audio Transcriber\Inbox for new audio files every 10s...
-   ```
-4. Each file gets a transcript with the same name: `meeting1.mp3` →
+3. Add files: drag them onto the window, click **Add audio files...**, or
+   copy them into the `Inbox` folder yourself.
+4. The window shows what's happening:
+
+   | Area | What it shows |
+   |---|---|
+   | **Status** | Running / Transcribing / Paused / Loading model, how many files are waiting and how many were done today. **Pause** holds the work and **Resume** carries on where it left off. |
+   | **Current file** | Name, progress bar, and roughly how long is left. **Skip this file** abandons it and moves on to the next one (the audio stays in the Inbox and is not tried again until it changes or the program restarts). |
+   | **Folders** | Your Inbox and Transcripts folders, with **Open** and **Change** buttons. |
+   | **Recent transcripts** | The newest transcripts (from any PC sharing the folder), with **Open**. |
+   | **Settings** | Easy switches; see [Settings](#configuration). |
+   | **Activity** | A live log of everything the program does. |
+
+5. Each file gets a transcript with the same name: `meeting1.mp3` →
    `meeting1.txt`. If two files share a name (e.g. `song.mp3` and
    `song.mp4`), the second one gets `song.mp4.txt` so neither is skipped or
    overwritten. (This is tracked in a small hidden file,
    `.transcriber-index.json`, in the output folder.)
-5. To stop, press **Ctrl+C** or close the window.
+6. **Closing the window keeps it running** in the system tray (the blue
+   sound-wave icon next to the clock; it may be under the **^** arrow).
+   Double-click the icon to bring the window back. To stop completely,
+   right-click the icon → **Quit**. A file that was half done is simply
+   started again next time.
 
-Tip: right-click `AudioTranscriber.exe` → *Send to → Desktop (create shortcut)*.
-To start it with Windows, put that shortcut in the Startup folder (press
-`Win + R` and type `shell:startup`).
+Tip: switch on **Start with Windows** in the settings to have it start
+hidden in the tray whenever you log in.
 
-### 3. Use different folders (optional)
+#### Console mode (servers, scripts)
 
-To use other folders, close the program, open `config.json` in Notepad and
-change `input_folder` and `output_folder`. Use double backslashes:
+The old text-only mode is still there. Run it from a command prompt:
 
-```json
-"input_folder": "D:\\Recordings",
-"output_folder": "D:\\Recordings\\Transcripts",
+```bat
+AudioTranscriber.exe --console
 ```
 
-Save the file and start the program again. Missing folders are created
-automatically.
+It reads the same `config.json`. Stop it with **Ctrl+C**.
 
 ## Configuration
 
-All settings live in `config.json` next to the .exe. Restart the program after
-changing them.
+Most settings can be changed in the window's **Settings** panel. They are
+saved to `config.json` straight away and take effect on the next file (the
+file being transcribed finishes with the old settings).
+
+| In the window | Setting in `config.json` |
+|---|---|
+| Mode: Fast / Accurate | `speed` |
+| Quality | `model_size` |
+| Language | `language` |
+| Order | `order` |
+| Skip silence | `vad_filter` |
+| Add timestamps | `include_timestamps` |
+| Use file name as a hint | `use_filename_hint` |
+| Folders → Change | `input_folder`, `output_folder` |
+
+The remaining settings (`file_types`, `poll_interval_seconds`, `device`) are
+only in `config.json`; restart the program after editing it by hand.
 
 ```json
 {
@@ -292,12 +314,13 @@ and keeps working.
 | Problem | Solution |
 |---|---|
 | A file is ignored | Check its real extension: Windows hides extensions by default, so a `.mp4` can look like an MP3. Enable *View → Show → File name extensions* in Explorer and make sure the extension is in `file_types`. |
-| Only part of a song is transcribed | Set `"vad_filter": false`. |
+| Only part of a song is transcribed | Turn off **Skip silence** (`"vad_filter": false`). |
 | `config.json is not valid JSON` | Paths need double backslashes (`C:\\Users\\...`), and every line except the last needs a comma. |
-| A file failed | The error is shown in the console and saved in `transcriber.log`. Failed files are not retried unless the file changes; restart the program to retry. |
-| "Another copy of the transcriber is already watching..." | The program is already running (check the taskbar). Close that window first. |
+| A file failed | The error is shown in the Activity box (and a notification) and saved in `transcriber.log`. Failed files are not retried unless the file changes; restart the program to retry. |
+| "Another copy of the transcriber is already watching..." | The program is already running. Look for its icon in the system tray next to the clock (maybe under **^**), right-click it → **Quit**. |
 | A transcript should be redone | Delete its `.txt` file; it is transcribed again within one check. |
-| Very slow | Use a smaller `model_size`, or set up a GPU. |
+| Very slow | Choose **Mode: Fast** or a smaller **Quality**, or set up a GPU. |
+| No tray icon | Click the **^** arrow next to the clock; Windows hides new tray icons there. Drag it out to keep it visible. |
 | `GPU could not be used` | The CUDA libraries are missing; see [GPU acceleration](#gpu-acceleration-optional). |
 | Antivirus warning | Unsigned programs built with PyInstaller are sometimes flagged by mistake. Building it yourself from this source avoids trusting a third-party binary. |
 | Transcript has odd lines in instrumental parts | Whisper sometimes guesses words during music. Common fake lines are removed automatically; others can be deleted by hand. |
@@ -312,16 +335,18 @@ After running `build.bat` once (to create `.venv`), you can run the script
 directly without building:
 
 ```bat
-.venv\Scripts\python.exe transcriber.py
+.venv\Scripts\python.exe app.py                   (window)
+.venv\Scripts\python.exe transcriber.py            (console)
 ```
 
 When run this way, `config.json`, `transcriber.log` and `models\` are created
-next to `transcriber.py`.
+next to the scripts.
 
 ## Project structure
 
 ```text
-transcriber.py          The application
+app.py                  The window, tray icon and settings panel
+transcriber.py          The transcription engine (also runs on its own in a console)
 requirements.txt        Top-level Python dependencies (loose versions)
 requirements-lock.txt   Exact tested versions, used by build.bat
 build.bat               One-click build script (venv + install + PyInstaller)
@@ -343,14 +368,19 @@ into `dist\AudioTranscriber`, so rebuilding never deletes your downloaded
 models, settings or log. It runs:
 
 ```bat
-pyinstaller --noconfirm --clean --onedir --console --name AudioTranscriber ^
-    --distpath build\staging ^
+pyinstaller --noconfirm --clean --onedir --windowed --name AudioTranscriber ^
+    --icon build\icon.ico --distpath build\staging ^
     --collect-all faster_whisper --collect-all ctranslate2 ^
     --collect-all onnxruntime --collect-all av --collect-all tokenizers ^
+    --collect-all customtkinter --collect-all tkinterdnd2 ^
+    --hidden-import pystray._win32 ^
     --copy-metadata faster-whisper --copy-metadata huggingface_hub ^
     --copy-metadata tokenizers --copy-metadata tqdm --copy-metadata numpy ^
-    transcriber.py
+    app.py
 ```
+
+The icon (`build\icon.ico`) is drawn by `app.py` itself, so there is no image
+file to keep in the repository.
 
 - `--collect-all` bundles the DLLs, compiled modules and data files (such as
   the Silero VAD model) that PyInstaller cannot detect on its own.

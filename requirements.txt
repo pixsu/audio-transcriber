@@ -11,5 +11,11 @@ numpy
 # file fail with "unexpected keyword argument 'metadata_errors'".
 av>=11,<15
 
+# The window: modern widgets, tray icon (+ Pillow for its image), drag and drop
+customtkinter
+pystray
+pillow
+tkinterdnd2
+
 # Used only to build the .exe
 pyinstaller>=6.10

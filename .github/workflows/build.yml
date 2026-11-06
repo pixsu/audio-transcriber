@@ -16,6 +16,7 @@ on:
     tags: ["v*"]
     paths:
       - transcriber.py
+      - app.py
       - requirements-lock.txt
       - build.bat
       - .github/workflows/build.yml
@@ -65,16 +66,15 @@ jobs:
           python -c "import wave,struct,math; w=wave.open(r'smoke\in\tone.wav','wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(struct.pack('<h', int(8000*math.sin(2*math.pi*440*i/16000))) for i in range(32000))); w.close()"
           @{ input_folder = "$PWD\smoke\in"; output_folder = "$PWD\smoke\out"; model_size = "tiny" } |
             ConvertTo-Json | Set-Content -Encoding utf8 "$app\config.json"
-          $p = Start-Process "$app\AudioTranscriber.exe" -WorkingDirectory $app -PassThru `
-                 -RedirectStandardOutput smoke\stdout.txt -RedirectStandardError smoke\stderr.txt
+          # Starts the normal window version, so the window and tray are tested too.
+          $p = Start-Process "$app\AudioTranscriber.exe" -WorkingDirectory $app -PassThru
           $deadline = (Get-Date).AddMinutes(10)
           while (-not (Test-Path smoke\out\tone.txt) -and -not $p.HasExited -and (Get-Date) -lt $deadline) {
             Start-Sleep 2
           }
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-          Get-Content smoke\stdout.txt
+          Get-Content "$app\transcriber.log" -ErrorAction SilentlyContinue
           if (-not (Test-Path smoke\out\tone.txt)) {
-            Get-Content smoke\stderr.txt
             Write-Error "Smoke test failed: the .exe did not produce a transcript"
             exit 1
           }

@@ -29,12 +29,50 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
 # whose work is whose (only letters, digits, "-" and "_" are kept).
 HOSTNAME = re.sub(r"[^A-Za-z0-9_-]", "_", socket.gethostname()) or "pc"
+
+
+class Stopped(Exception):
+    """Raised inside a transcription when the user quits mid-file."""
+
+
+class Skipped(Exception):
+    """Raised inside a transcription when the user skips the current file."""
+
+
+class Hooks:
+    """How the engine reports to (and is paused by) the window.
+
+    The console version uses these no-op defaults; the window version
+    overrides them.
+    """
+
+    def checkpoint(self) -> None:
+        """Called often while working. May block (pause) or raise Stopped."""
+
+    def progress(self, audio: Path, percent: float) -> None:
+        """Progress of the current file, 0-100."""
+
+    def event(self, kind: str, **data) -> None:
+        """Something happened: "loading", "ready", "started", "done", "failed",
+        "idle", "queue"."""
+
+    def sleep(self, seconds: float) -> None:
+        """Wait between folder checks. May return early (or raise Stopped)."""
+        time.sleep(seconds)
+
+    def should_restart(self) -> bool:
+        """True when settings changed and the main loop should return, so it
+        can be restarted with them. Only checked between files."""
+        return False
+
+
+NO_HOOKS = Hooks()
 
 
 class UserError(Exception):
@@ -139,26 +177,45 @@ SPEED_BEAM_SIZE = {"fast": 1, "accurate": 5}
 VALID_ORDERS = {"newest_first", "oldest_first", "name"}
 
 
-def load_config() -> dict:
-    """Load config.json, creating it with defaults if it doesn't exist.
-
-    Missing keys are filled in from DEFAULT_CONFIG, so an old config file
-    keeps working after new settings are added.
-    """
+def read_raw_config() -> dict:
+    """config.json exactly as written (created with defaults if missing)."""
     if not CONFIG_PATH.exists():
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(DEFAULT_CONFIG, f, indent=4)
-        print(f"Created default config file: {CONFIG_PATH}")
+        save_raw_config(DEFAULT_CONFIG)
+        log.info("Created default config file: %s", CONFIG_PATH)
 
     with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
         try:
-            user_config = json.load(f)
+            return json.load(f)
         except json.JSONDecodeError as e:
             raise UserError(
                 f"{CONFIG_PATH} is not valid JSON ({e}).\n"
                 "Tip: backslashes in Windows paths must be doubled, "
                 r'e.g. "C:\\Users\\YourName\\Documents\\Audio Transcriber\\Inbox"'
             ) from None
+
+
+def save_raw_config(raw: dict) -> None:
+    """Write config.json safely (temp file + rename, so it's never half-written)."""
+    tmp = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(raw, f, indent=4)
+    os.replace(tmp, CONFIG_PATH)
+
+
+def update_config(changes: dict) -> None:
+    """Change some settings in config.json, keeping everything else."""
+    raw = read_raw_config()
+    raw.update(changes)
+    save_raw_config(raw)
+
+
+def load_config() -> dict:
+    """Load config.json, creating it with defaults if it doesn't exist.
+
+    Missing keys are filled in from DEFAULT_CONFIG, so an old config file
+    keeps working after new settings are added.
+    """
+    user_config = read_raw_config()
 
     config = dict(DEFAULT_CONFIG)
     config.update(user_config)
@@ -209,6 +266,8 @@ def setup_logging() -> None:
     """Log to the console (short messages) and transcriber.log (with times)."""
     # Make sure the console can print characters like "→" without crashing.
     for stream in (sys.stdout, sys.stderr):
+        if stream is None:
+            continue
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
@@ -222,10 +281,12 @@ def setup_logging() -> None:
     def only_ours(record):
         return record.name.startswith("transcriber") or record.levelno >= logging.WARNING
 
-    console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(logging.Formatter("%(message)s"))
-    console.addFilter(only_ours)
-    root.addHandler(console)
+    if sys.stdout is not None:  # no console in the window version
+        console = logging.StreamHandler(sys.stdout)
+        console.setFormatter(logging.Formatter("%(message)s"))
+        console.addFilter(only_ours)
+        root.addHandler(console)
+    setup_logging.only_ours = only_ours  # reused by the window's activity box
 
     # The log file is capped: when it reaches 1 MB it is renamed to
     # transcriber.log.1 (older ones to .2, .3) and a new one is started.
@@ -358,7 +419,8 @@ def is_hallucination(text: str) -> bool:
     return norm in HALLUCINATIONS or norm.startswith("subtitles by") or "amara org" in norm
 
 
-def transcribe_file(model, audio_path: Path, txt_path: Path, config: dict) -> None:
+def transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
+                    hooks: Hooks = NO_HOOKS) -> None:
     """Transcribe one audio/video file and write the .txt file.
 
     The text is first written to a temporary ".part" file and renamed at the
@@ -389,13 +451,17 @@ def transcribe_file(model, audio_path: Path, txt_path: Path, config: dict) -> No
     # Warn if it threw away most of the file.
     kept = getattr(info, "duration_after_vad", None)
     if config["vad_filter"] and kept is not None and info.duration > 30 and kept < info.duration * 0.5:
-        log.warning("   Silence filter kept only %s of %s. If this is music, set "
-                    '"vad_filter": false in config.json to transcribe everything.',
+        log.warning("   Silence filter kept only %s of %s. If this is music, turn off "
+                    '"Skip silence" (or set "vad_filter": false in config.json).',
                     format_timestamp(kept), format_timestamp(info.duration))
 
     lines = []
     last_report = time.time()
+    hooks.progress(audio_path, 0)
     for seg in segments:  # segments are produced as the audio is processed
+        hooks.checkpoint()  # pausing here simply holds the work until resumed
+        if info.duration:
+            hooks.progress(audio_path, min(100.0, seg.end / info.duration * 100))
         text = seg.text.strip()
         if not text or is_hallucination(text):
             continue
@@ -611,14 +677,17 @@ def can_open(path: Path) -> bool:
 
 
 class Transcriber:
-    def __init__(self, model, config: dict):
+    def __init__(self, model, config: dict, hooks: Hooks = NO_HOOKS, failed=None):
         self.model = model
+        self.hooks = hooks
         self.config = config
         self.input_dir = Path(config["input_folder"])
         self.output_dir = Path(config["output_folder"])
         self.names = OutputNames(self.output_dir)
         # Files that failed: name -> signature. Not retried unless the file changes.
-        self.failed = {}
+        # (Passed in by the window, so skipped files stay skipped after a
+        # settings change restarts this loop.)
+        self.failed = {} if failed is None else failed
         # Last seen size of files not done yet: name -> size. A file is only
         # started once its size is the same in two scans in a row (so files
         # still being copied or recorded are left alone).
@@ -737,17 +806,26 @@ class Transcriber:
                 return
             more = f" ({still_waiting} more waiting)" if still_waiting else ""
             log.info("Transcribing %s...%s", audio.name, more)
+            self.hooks.event("started", audio=audio, waiting=still_waiting)
             start = time.time()
-            transcribe_file(self.model, audio, txt, self.config)
+            transcribe_file(self.model, audio, txt, self.config, self.hooks)
             self.names.record(txt, audio)
-            log.info("Done → %s (took %.0fs)", txt.name, time.time() - start)
+            took = time.time() - start
+            log.info("Done → %s (took %.0fs)", txt.name, took)
+            self.hooks.event("done", audio=audio, txt=txt, seconds=took)
             self.failed.pop(audio.name, None)
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, Stopped):
             raise
+        except Skipped:
+            # Not retried unless the file changes or the program restarts.
+            log.info("Skipped: %s", audio.name)
+            self.failed[audio.name] = file_signature(audio)
+            self.hooks.event("skipped", audio=audio)
         except Exception as e:
             log.error("FAILED %s: %s (skipping it)", audio.name, e)
             file_only.error("Details for %s:\n%s", audio.name, traceback.format_exc())
             self.failed[audio.name] = file_signature(audio)
+            self.hooks.event("failed", audio=audio, error=str(e))
         finally:
             claim.release()
 
@@ -756,8 +834,10 @@ class Transcriber:
         first by default), re-checking the folder between files so a newly
         arrived file doesn't wait behind a long backlog."""
         interval = self.config["poll_interval_seconds"]
+        hooks = self.hooks
         idle = False
-        while True:
+        while not hooks.should_restart():
+            hooks.checkpoint()
             try:
                 ready, waiting, saw_new_file = self.scan()
             except KeyboardInterrupt:
@@ -765,15 +845,16 @@ class Transcriber:
             except Exception as e:
                 # e.g. a network folder is temporarily unavailable - try again.
                 log.error("Error while checking folder: %s", e)
-                time.sleep(interval)
+                hooks.sleep(interval)
                 continue
+            hooks.event("queue", waiting=len(waiting))
 
             if saw_new_file:
                 # A file seen for the first time gets a second look in 2
                 # seconds (to confirm it has finished copying) BEFORE we start
                 # anything else, so a fresh file isn't stuck behind one more
                 # long backlog file.
-                time.sleep(2)
+                hooks.sleep(2)
                 continue
 
             if ready:
@@ -782,10 +863,11 @@ class Transcriber:
                 continue
 
             if not idle and not waiting:
-                log.info("All caught up. Watching %s for new audio files every %ds... "
-                         "(Ctrl+C to stop)", self.input_dir, interval)
+                log.info("All caught up. Watching %s for new audio files every %ds...",
+                         self.input_dir, interval)
+                hooks.event("idle")
                 idle = True
-            time.sleep(interval)
+            hooks.sleep(interval)
 
 
 # ---------------------------------------------------------------------------
@@ -856,8 +938,11 @@ def ensure_single_instance(input_dir: Path) -> None:
         kernel32.CloseHandle(handle)
         raise UserError(
             f"Another copy of the transcriber is already watching {input_dir}.\n"
-            "Close the other window first (or check the taskbar), then start this one again."
+            "Close the other window first (or check the taskbar and the tray "
+            "icons next to the clock), then start this one again."
         )
+    if _instance_lock:  # switching to a different input folder
+        kernel32.CloseHandle(_instance_lock)
     _instance_lock = handle
 
 
@@ -868,7 +953,8 @@ def wait_for_enter() -> None:
         pass
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Run in a console window (the original text-only mode)."""
     try:
         main()
     except KeyboardInterrupt:
@@ -898,3 +984,7 @@ if __name__ == "__main__":
                 pass
         wait_for_enter()
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    cli()

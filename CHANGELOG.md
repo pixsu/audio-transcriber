@@ -4,6 +4,37 @@ All notable changes to this project are listed here.
 Versions follow [Semantic Versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH` (breaking change / new feature / bug fix).
 
+## [1.4.0] - 2026-11-06
+
+### Added
+- **A proper window** instead of a console: live status, a progress bar
+  with time left, files waiting and done today, recent transcripts with an
+  **Open** button, and a live Activity log.
+- **Easy switches for the settings:** Fast / Accurate, quality (model),
+  language, order, skip silence, timestamps, file-name hint. Changes are
+  saved to `config.json` and apply from the next file, no restart needed.
+  Changing the model loads the new one automatically.
+- **Change the Inbox or Transcripts folder** with a folder picker.
+- **Add files** by dragging them onto the window or with
+  **Add audio files...** (they are copied into the Inbox).
+- **Pause / Resume**, also mid-file.
+- **Skip this file:** abandon the file being transcribed (after a
+  confirmation) and move on to the next one. It is not retried until the
+  file changes or the program restarts.
+- **System tray icon:** closing the window keeps it running in the
+  background; Windows notifications when a transcript is ready or a file
+  fails; **Quit** from the tray menu.
+- **Start with Windows** switch (starts hidden in the tray).
+- An app icon.
+
+### Changed
+- `AudioTranscriber.exe` now opens the window. The text-only mode is still
+  available with `AudioTranscriber.exe --console`.
+
+### Upgrading from 1.3.0
+- Unzip the new version and copy `config.json` and the `models` folder from
+  the old folder into the new one. Nothing else changes.
+
 ## [1.3.0] - 2026-11-06
 
 ### Changed

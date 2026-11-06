@@ -27,9 +27,11 @@ echo Installing requirements...
 REM Build into a staging folder first. PyInstaller wipes its output folder,
 REM and we don't want that to delete your models, config.json or log.
 echo Building (this takes a few minutes)...
+".venv\Scripts\python.exe" -c "import app; app.save_ico('build/icon.ico')" || goto :error
 ".venv\Scripts\python.exe" -m PyInstaller ^
     --noconfirm --clean ^
-    --onedir --console ^
+    --onedir --windowed ^
+    --icon build\icon.ico ^
     --name AudioTranscriber ^
     --distpath build\staging ^
     --collect-all faster_whisper ^
@@ -37,12 +39,15 @@ echo Building (this takes a few minutes)...
     --collect-all onnxruntime ^
     --collect-all av ^
     --collect-all tokenizers ^
+    --collect-all customtkinter ^
+    --collect-all tkinterdnd2 ^
+    --hidden-import pystray._win32 ^
     --copy-metadata faster-whisper ^
     --copy-metadata huggingface_hub ^
     --copy-metadata tokenizers ^
     --copy-metadata tqdm ^
     --copy-metadata numpy ^
-    transcriber.py || goto :error
+    app.py || goto :error
 
 REM Copy the program into dist\AudioTranscriber. Only the program files are
 REM replaced; models\, config.json and transcriber.log are left alone.
