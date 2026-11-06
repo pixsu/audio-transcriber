@@ -11,6 +11,10 @@ subscription is needed.
 
 - **Hands-free:** processes everything in the input folder, then keeps
   watching it and transcribes new files as they arrive.
+- **Newest first:** fresh recordings jump ahead of an existing backlog, so
+  today's files don't wait behind an archive.
+- **Scales across PCs:** several PCs can share one network folder and split
+  the work automatically, without ever doing the same file twice.
 - **Many formats:** `.mp3`, `.mp4`, `.m4a`, `.wav`, `.flac`, `.ogg`, `.opus`,
   `.webm`, `.aac`, `.wma`, `.mkv`, `.mov`. Audio is extracted from video files
   automatically.
@@ -18,7 +22,7 @@ subscription is needed.
   Files that already have a transcript are skipped, so re-running is safe.
 - **Robust:** waits until a file has finished copying before starting, and a
   corrupted file is logged and skipped without stopping the program. Only
-  one copy can watch a folder at a time, so files are never processed twice.
+  one copy per PC can watch a folder, so files are never processed twice.
 - **Accurate on music and speech:** uses the file name as a hint for names and
   song titles, and removes lines Whisper is known to invent (such as
   *"Thanks for watching!"*).
@@ -86,11 +90,13 @@ When it finishes you will have:
 3. Drop audio or video files into `Documents\mp3`. The console shows the
    progress:
    ```text
-   Found 2 audio files
-   [1/2] Transcribing meeting1.mp3...
+   Found 2 audio files (0 already transcribed, 2 to do)
+   Transcribing meeting2.mp3... (1 more waiting)
       Detected language: en (98% sure), audio length 00:42:10
+   Done → meeting2.txt (took 640s)
+   Transcribing meeting1.mp3...
    Done → meeting1.txt (took 312s)
-   Watching C:\Users\YourName\Documents\mp3 for new audio files every 10s...
+   All caught up. Watching C:\Users\YourName\Documents\mp3 for new audio files every 10s...
    ```
 4. Each file gets a transcript with the same name: `meeting1.mp3` →
    `meeting1.txt`. If two files share a name (e.g. `song.mp3` and
@@ -132,6 +138,7 @@ changing them.
     "use_filename_hint": true,
     "file_types": [".mp3", ".mp4", ".m4a", ".wav", ".flac", ".ogg", ".opus",
                    ".webm", ".aac", ".wma", ".mkv", ".mov"],
+    "order": "newest_first",
     "poll_interval_seconds": 10,
     "device": "auto"
 }
@@ -147,6 +154,7 @@ changing them.
 | `vad_filter` | `true` | Skips silence. Good for speech; **set to `false` for music** (see below). |
 | `use_filename_hint` | `true` | Passes the cleaned file name (e.g. `Artist Song Title`) to the model to help it spell names and titles. |
 | `file_types` | (list above) | File extensions to pick up. |
+| `order` | `newest_first` | Which waiting file to do next: `newest_first` (fresh recordings first), `oldest_first`, or `name` (alphabetical). The folder is re-checked after every file, so a new file goes next even during a long backlog. |
 | `poll_interval_seconds` | `10` | How often to check the input folder for new files. |
 | `device` | `auto` | `auto` uses an NVIDIA GPU if available, otherwise the CPU. Force with `cuda` or `cpu`. |
 
@@ -173,6 +181,61 @@ Speed on a 4-minute song, measured on an Intel Core i7-12700F (CPU only):
 Slower CPUs will take proportionally longer. `large-v3-turbo` is not
 recommended for music: in testing it produced placeholder text instead of
 lyrics.
+
+## Large archives and long recordings
+
+Files of any length work; a 1-hour recording needs about 250 MB of memory
+while it is processed. Speed on spoken audio (news-style speech), measured on
+an Intel Core i7-12700F, CPU only:
+
+| Model | Speed | 1-hour file | 1,000 hours of audio |
+|---|---|---|---|
+| `small` | ~4× real time | ~15 min | ~10 days non-stop |
+| `medium` | ~1.5–2× real time | ~30–40 min | ~3–4 weeks non-stop |
+
+Running several files at once on the same PC does **not** help (the CPU is
+already fully used). To go faster:
+
+- **Add PCs.** Each extra PC adds its full speed; see
+  [Running on several PCs](#running-on-several-pcs).
+- **Use a GPU.** An NVIDIA GPU is typically many times faster than a CPU; see
+  [GPU acceleration](#gpu-acceleration-optional).
+- **Use `small` for bulk archive work** and `medium` where accuracy matters
+  most.
+
+If the program is closed in the middle of a file, that file starts again from
+the beginning next time.
+
+## Running on several PCs
+
+Several PCs can work through the same folders together, for example a shared
+folder on a file server:
+
+1. Put the input and output folders on a network share that every PC can
+   reach, with read access to the input folder and write access to the
+   output folder.
+2. On each PC, unzip the program and set the **same** `input_folder` and
+   `output_folder` in its `config.json`. Network paths work; double the
+   backslashes:
+   ```json
+   "input_folder": "\\\\fileserver\\recordings\\to_transcribe",
+   "output_folder": "\\\\fileserver\\recordings\\transcripts",
+   ```
+3. Start the program on each PC. Use the same `model_size` and `language` on
+   all PCs so transcripts are consistent.
+
+How the PCs share the work:
+
+- Before starting a file, a PC creates a hidden claim file
+  (`<name>.txt.inprogress`) in the output folder. Creating it is atomic, so
+  only one PC can claim a file; the others skip it and take the next one.
+- While working, the PC refreshes its claim every 30 seconds. If a PC crashes,
+  loses power or is closed, its claim stops being refreshed and another PC
+  takes the file over after 10 minutes. The same PC restarting resumes its
+  own unfinished file immediately.
+- Each PC keeps its own `transcriber.log`; the "This PC:" line at startup
+  shows its name, and takeovers are logged with the name of the PC that
+  stopped.
 
 ### Tips for better accuracy
 

@@ -4,6 +4,24 @@ All notable changes to this project are listed here.
 Versions follow [Semantic Versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH` (breaking change / new feature / bug fix).
 
+## [1.1.0] - 2026-11-06
+
+### Added
+- **Newest files first:** new `order` setting (`newest_first` by default,
+  or `oldest_first` / `name`). The folder is re-checked after every file, so
+  a fresh recording goes next even while a long backlog is being processed.
+- **Multiple PCs can share one folder:** each PC claims a file before working
+  on it (hidden `.inprogress` file in the output folder), so no file is done
+  twice. Claims from a PC that crashed or was closed are taken over after
+  10 minutes; the same PC restarting resumes its unfinished file at once.
+- Startup shows a summary ("Found N audio files (X already transcribed,
+  Y to do)"), the queue order and this PC's name.
+- README: guide for large archives, long recordings and running on several
+  PCs, with measured speeds.
+
+### Changed
+- Progress now shows how many files are still waiting instead of `[1/3]`.
+
 ## [1.0.0] - 2026-11-05
 
 First release.
