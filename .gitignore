@@ -20,3 +20,8 @@ models/
 .idea/
 Thumbs.db
 desktop.ini
+
+# Default Inbox/Transcripts folders (they land here when this project lives
+# in Documents\Audio Transcriber) - never commit audio or transcripts
+Inbox/
+Transcripts/
