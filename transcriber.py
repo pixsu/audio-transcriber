@@ -29,7 +29,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -65,6 +65,10 @@ class Hooks:
     def sleep(self, seconds: float) -> None:
         """Wait between folder checks. May return early (or raise Stopped)."""
         time.sleep(seconds)
+
+    def pick(self, ready: list) -> Path:
+        """Which ready file to do next (the window can move one to the front)."""
+        return ready[0]
 
     def should_restart(self) -> bool:
         """True when settings changed and the main loop should return, so it
@@ -847,7 +851,8 @@ class Transcriber:
                 log.error("Error while checking folder: %s", e)
                 hooks.sleep(interval)
                 continue
-            hooks.event("queue", waiting=len(waiting))
+            hooks.event("queue", waiting=len(waiting),
+                        files=sort_queue(waiting, self.config["order"]))
 
             if saw_new_file:
                 # A file seen for the first time gets a second look in 2
@@ -859,7 +864,7 @@ class Transcriber:
 
             if ready:
                 idle = False
-                self.process_one(ready[0], len(waiting) - 1)
+                self.process_one(hooks.pick(ready), len(waiting) - 1)
                 continue
 
             if not idle and not waiting:
@@ -909,6 +914,11 @@ def main() -> None:
     Transcriber(model, config).run_forever()
 
 
+def folder_key(input_dir: Path) -> str:
+    """Short id for an input folder (used to name the single-instance lock)."""
+    return hashlib.sha1(str(input_dir.resolve()).lower().encode("utf-8")).hexdigest()[:16]
+
+
 # Kept for the whole run: Windows releases the lock when the program exits.
 _instance_lock = None
 
@@ -926,7 +936,7 @@ def ensure_single_instance(input_dir: Path) -> None:
     import ctypes
     from ctypes import wintypes
 
-    folder_id = hashlib.sha1(str(input_dir.resolve()).lower().encode("utf-8")).hexdigest()[:16]
+    folder_id = folder_key(input_dir)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateMutexW.restype = wintypes.HANDLE
     kernel32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)

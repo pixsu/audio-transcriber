@@ -96,14 +96,18 @@ When it finishes you will have:
    copy them into the `Inbox` folder yourself.
 4. The window shows what's happening:
 
-   | Area | What it shows |
+   | Area | What it does |
    |---|---|
-   | **Status** | Running / Transcribing / Paused / Loading model, how many files are waiting and how many were done today. **Pause** holds the work and **Resume** carries on where it left off. |
-   | **Current file** | Name, progress bar, and roughly how long is left. **Skip this file** abandons it and moves on to the next one (the audio stays in the Inbox and is not tried again until it changes or the program restarts). |
-   | **Folders** | Your Inbox and Transcripts folders, with **Open** and **Change** buttons. |
-   | **Recent transcripts** | The newest transcripts (from any PC sharing the folder), with **Open**. |
-   | **Settings** | Easy switches; see [Settings](#configuration). |
-   | **Activity** | A live log of everything the program does. |
+   | **Top bar** | **Add files**, **Open Inbox**, **Open Transcripts**, and **Menu** (log file, config.json, Retry all, About, Quit). |
+   | **Status card** | Ready / Transcribing / Paused / Loading model / Needs attention, files waiting, done today. The current file with its details (format, duration, size, bitrate, mono/stereo, sample rate), a progress bar and time left. **Pause / Resume** and **Skip this file**. If something is wrong (e.g. a folder can't be reached) it says what and shows **Try again**. |
+   | **Queue** tab | Files waiting, in the order they will be done, each with its format, duration and size (the status line also shows the total audio waiting). **Do next** moves a file to the front; **Skip** takes it out of the queue. New files show up within seconds, even during a long file. |
+   | **Completed** tab | Finished transcripts (from any PC sharing the folder) with the original file's format, duration and size, the word count, **Open** and **Show in folder**. |
+   | **Issues** tab | Files that failed or were skipped, with the reason. **Retry** or **Retry all**. |
+   | **Activity** tab | A live log; warnings in amber, errors in red. |
+   | **Settings** panel | Easy switches; see [Configuration](#configuration). Changes wait until you click **Apply** (or **Discard** to undo them). **Reset to defaults** selects the default values for everything except your folders. |
+   | **Status bar** | The loaded model (e.g. *medium on CPU*), this PC's name, and files being copied in. |
+
+   Shortcuts: **Ctrl+O** add files, **Ctrl+Q** quit.
 
 5. Each file gets a transcript with the same name: `meeting1.mp3` →
    `meeting1.txt`. If two files share a name (e.g. `song.mp3` and
@@ -112,7 +116,7 @@ When it finishes you will have:
    `.transcriber-index.json`, in the output folder.)
 6. **Closing the window keeps it running** in the system tray (the blue
    sound-wave icon next to the clock; it may be under the **^** arrow).
-   Double-click the icon to bring the window back. To stop completely,
+   Double-click the icon (or just start the program again) to bring the window back. To stop completely,
    right-click the icon → **Quit**. A file that was half done is simply
    started again next time.
 
@@ -131,9 +135,17 @@ It reads the same `config.json`. Stop it with **Ctrl+C**.
 
 ## Configuration
 
-Most settings can be changed in the window's **Settings** panel. They are
-saved to `config.json` straight away and take effect on the next file (the
-file being transcribed finishes with the old settings).
+Most settings can be changed in the window's **Settings** panel. Nothing
+changes until you click **Apply**; the panel shows how many changes are
+waiting, and **Discard** puts everything back.
+
+Changes with bigger effects ask for confirmation first and explain what
+will happen: a new **Quality** (model), which may mean a download of up to
+3 GB; a different **Device**; new **folders**; and **Start with Windows**.
+
+Applied settings are saved to `config.json` and take effect from the next
+file (the file being transcribed finishes with the old settings). Quitting
+with unapplied changes asks whether to apply them.
 
 | In the window | Setting in `config.json` |
 |---|---|
@@ -145,8 +157,9 @@ file being transcribed finishes with the old settings).
 | Add timestamps | `include_timestamps` |
 | Use file name as a hint | `use_filename_hint` |
 | Folders → Change | `input_folder`, `output_folder` |
+| Device | `device` |
 
-The remaining settings (`file_types`, `poll_interval_seconds`, `device`) are
+The remaining settings (`file_types`, `poll_interval_seconds`) are
 only in `config.json`; restart the program after editing it by hand.
 
 ```json

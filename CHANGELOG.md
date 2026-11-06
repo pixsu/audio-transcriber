@@ -4,6 +4,48 @@ All notable changes to this project are listed here.
 Versions follow [Semantic Versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH` (breaking change / new feature / bug fix).
 
+## [1.5.0] - 2026-11-06
+
+### Added
+- **Queue tab:** every waiting file in order, with size and when it arrived.
+  **Do next** moves a file to the front; **Skip** takes it out of the queue.
+  New files appear within seconds, even while a long file is running.
+- **Completed tab:** finished transcripts with **Open** and **Show in folder**,
+  and how long each took.
+- **Issues tab:** failed and skipped files with the reason, plus **Retry** and
+  **Retry all** (no restart needed any more).
+- **Top bar** with Add files, Open Inbox, Open Transcripts and a **Menu**
+  (Open log file, Edit config.json, Retry all, About, Quit).
+- **Device** setting (Automatic / CPU only / NVIDIA GPU) and **Reset to
+  defaults** in the Settings panel.
+- **Status bar** showing the loaded model, this PC's name and file copies.
+- Clear error state: when something is wrong (e.g. a folder can't be reached)
+  the window says what to fix and offers **Try again**.
+- Keyboard shortcuts: Ctrl+O (add files), Ctrl+Q (quit).
+- **File details:** format, duration and size for queued and completed files;
+  bitrate, mono/stereo and sample rate for the file being transcribed; word
+  count for transcripts; total audio waiting in the status line. Details are
+  read in the background, so large folders stay responsive.
+- New dropdowns that match the window's theme (the old ones opened a plain
+  Windows menu with a white border).
+- **Apply / Discard** for settings: changes are no longer saved the moment
+  you click them. The panel shows how many changes are waiting.
+- Confirmation for bigger changes (model, device, folders, Start with
+  Windows), explaining the effect, e.g. the download size of a new model.
+- Quitting with unapplied settings asks whether to apply them.
+
+### Changed
+- Redesigned window: status card on top, tabs below, scrollable settings
+  panel on the right; activity log moved to its own tab with coloured
+  warnings and errors.
+- Quitting while a file is being transcribed now asks first.
+- Starting the program again while it is already running brings the
+  existing window to the front instead of showing an error.
+- Adding files checks the file type and won't overwrite a different file
+  with the same name already in the Inbox.
+- Choosing the same folder for Inbox and Transcripts is refused.
+- Sharper text on high-resolution screens.
+
 ## [1.4.0] - 2026-11-06
 
 ### Added
