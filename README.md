@@ -49,7 +49,7 @@ subscription is needed.
    latest release.
 2. Unzip it anywhere (e.g. `Documents\AudioTranscriber`).
 3. Continue with [Run it](#2-run-it). The program is
-   `MP3Transcriber\MP3Transcriber.exe` inside the unzipped folder.
+   `AudioTranscriber\AudioTranscriber.exe` inside the unzipped folder.
 
 > The program is not code-signed, so Windows may show *"Windows protected
 > your PC"* the first time. Click **More info → Run anyway**. Every release is
@@ -71,23 +71,23 @@ When it finishes you will have:
 
 | Output | What it is |
 |---|---|
-| `dist\MP3Transcriber\` | The program folder. Run `MP3Transcriber.exe` inside it. |
-| `dist\MP3Transcriber.zip` | A clean copy of that folder to give to other PCs (no Python needed there). |
+| `dist\AudioTranscriber\` | The program folder. Run `AudioTranscriber.exe` inside it. |
+| `dist\AudioTranscriber.zip` | A clean copy of that folder to give to other PCs (no Python needed there). |
 
-> Keep `MP3Transcriber.exe` and the `_internal` folder next to it together.
-> To move the program, move the whole `MP3Transcriber` folder.
+> Keep `AudioTranscriber.exe` and the `_internal` folder next to it together.
+> To move the program, move the whole `AudioTranscriber` folder.
 
 ### 2. Run it
 
-1. Double-click `dist\MP3Transcriber\MP3Transcriber.exe`.
+1. Double-click `dist\AudioTranscriber\AudioTranscriber.exe`.
 2. On the first run it:
    - creates two folders in **your Documents folder**:
-     `Documents\mp3` (put files here) and `Documents\transcribed`
-     (transcripts appear here);
+     `Documents\Audio Transcriber\Inbox` (put files here) and
+     `Documents\Audio Transcriber\Transcripts` (transcripts appear here);
    - creates a `config.json` settings file next to the .exe;
    - downloads the speech model (`small` ≈ 480 MB, `medium` ≈ 1.5 GB) into a
      `models` folder next to the .exe. After that it works offline.
-3. Drop audio or video files into `Documents\mp3`. The console shows the
+3. Drop audio or video files into the `Inbox` folder. The console shows the
    progress:
    ```text
    Found 2 audio files (0 already transcribed, 2 to do)
@@ -96,7 +96,7 @@ When it finishes you will have:
    Done → meeting2.txt (took 640s)
    Transcribing meeting1.mp3...
    Done → meeting1.txt (took 312s)
-   All caught up. Watching C:\Users\YourName\Documents\mp3 for new audio files every 10s...
+   All caught up. Watching C:\Users\YourName\Documents\Audio Transcriber\Inbox for new audio files every 10s...
    ```
 4. Each file gets a transcript with the same name: `meeting1.mp3` →
    `meeting1.txt`. If two files share a name (e.g. `song.mp3` and
@@ -105,7 +105,7 @@ When it finishes you will have:
    `.transcriber-index.json`, in the output folder.)
 5. To stop, press **Ctrl+C** or close the window.
 
-Tip: right-click `MP3Transcriber.exe` → *Send to → Desktop (create shortcut)*.
+Tip: right-click `AudioTranscriber.exe` → *Send to → Desktop (create shortcut)*.
 To start it with Windows, put that shortcut in the Startup folder (press
 `Win + R` and type `shell:startup`).
 
@@ -129,8 +129,8 @@ changing them.
 
 ```json
 {
-    "input_folder": "C:\\Users\\YourName\\Documents\\mp3",
-    "output_folder": "C:\\Users\\YourName\\Documents\\transcribed",
+    "input_folder": "C:\\Users\\YourName\\Documents\\Audio Transcriber\\Inbox",
+    "output_folder": "C:\\Users\\YourName\\Documents\\Audio Transcriber\\Transcripts",
     "model_size": "small",
     "language": "auto",
     "include_timestamps": false,
@@ -147,8 +147,8 @@ changing them.
 
 | Setting | Default | Description |
 |---|---|---|
-| `input_folder` | `Documents\mp3` | Folder to read audio/video files from. Subfolders are not scanned. Created if missing. |
-| `output_folder` | `Documents\transcribed` | Folder to save `.txt` transcripts to. Created if missing. |
+| `input_folder` | `Documents\Audio Transcriber\Inbox` | Folder to read audio/video files from. Subfolders are not scanned. Created if missing. |
+| `output_folder` | `Documents\Audio Transcriber\Transcripts` | Folder to save `.txt` transcripts to. Created if missing. |
 | `model_size` | `small` | `tiny`, `base`, `small`, `medium` or `large-v3`. Larger is more accurate but slower and uses more memory. See [Choosing a model](#choosing-a-model). |
 | `language` | `auto` | `auto` detects the language. Or force one with a code, e.g. `en` (English) or `tl` (Tagalog). |
 | `include_timestamps` | `false` | `true` writes lines like `[00:01:23 → 00:01:30] text here`. |
@@ -277,7 +277,7 @@ driver. They are not bundled with the program. Either:
 
 - **Easiest:** download the CUDA 12 cuBLAS + cuDNN pack from
   [Purfview/whisper-standalone-win](https://github.com/Purfview/whisper-standalone-win/releases/tag/libs)
-  and extract the `.dll` files next to `MP3Transcriber.exe` (or into a `cuda`
+  and extract the `.dll` files next to `AudioTranscriber.exe` (or into a `cuda`
   folder next to it), **or**
 - install the [CUDA Toolkit 12](https://developer.nvidia.com/cuda-downloads)
   and [cuDNN 9](https://developer.nvidia.com/cudnn) and add their `bin`
@@ -339,11 +339,11 @@ Generated (not in git): `.venv\`, `build\`, `dist\`, and at runtime
 ## Build details
 
 `build.bat` builds into `build\staging` first and then copies the program files
-into `dist\MP3Transcriber`, so rebuilding never deletes your downloaded
+into `dist\AudioTranscriber`, so rebuilding never deletes your downloaded
 models, settings or log. It runs:
 
 ```bat
-pyinstaller --noconfirm --clean --onedir --console --name MP3Transcriber ^
+pyinstaller --noconfirm --clean --onedir --console --name AudioTranscriber ^
     --distpath build\staging ^
     --collect-all faster_whisper --collect-all ctranslate2 ^
     --collect-all onnxruntime --collect-all av --collect-all tokenizers ^

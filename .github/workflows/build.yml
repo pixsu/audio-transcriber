@@ -59,13 +59,13 @@ jobs:
       - name: Smoke test (transcribe a short test file with the built .exe)
         shell: pwsh
         run: |
-          $app = "dist\MP3Transcriber"
+          $app = "dist\AudioTranscriber"
           New-Item -ItemType Directory -Force smoke\in, smoke\out | Out-Null
           # 2 seconds of a 440 Hz tone as a WAV file
           python -c "import wave,struct,math; w=wave.open(r'smoke\in\tone.wav','wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(struct.pack('<h', int(8000*math.sin(2*math.pi*440*i/16000))) for i in range(32000))); w.close()"
           @{ input_folder = "$PWD\smoke\in"; output_folder = "$PWD\smoke\out"; model_size = "tiny" } |
             ConvertTo-Json | Set-Content -Encoding utf8 "$app\config.json"
-          $p = Start-Process "$app\MP3Transcriber.exe" -WorkingDirectory $app -PassThru `
+          $p = Start-Process "$app\AudioTranscriber.exe" -WorkingDirectory $app -PassThru `
                  -RedirectStandardOutput smoke\stdout.txt -RedirectStandardError smoke\stderr.txt
           $deadline = (Get-Date).AddMinutes(10)
           while (-not (Test-Path smoke\out\tone.txt) -and -not $p.HasExited -and (Get-Date) -lt $deadline) {
@@ -84,7 +84,7 @@ jobs:
         shell: pwsh
         run: |
           $zip = "AudioTranscriber-$env:VERSION-windows-x64.zip"
-          Copy-Item dist\MP3Transcriber.zip $zip
+          Copy-Item dist\AudioTranscriber.zip $zip
           "ZIP=$zip" >> $env:GITHUB_ENV
 
       - name: Upload build (Actions tab → this run → Artifacts)
@@ -103,7 +103,7 @@ jobs:
           $pattern = "(?s)## \[$([regex]::Escape($env:VERSION))\][^\n]*\n(.*?)(?=\n## \[|\z)"
           $m = [regex]::Match($text, $pattern)
           $notes = if ($m.Success) { $m.Groups[1].Value.Trim() } else { "See CHANGELOG.md" }
-          $notes += "`n`n### How to install`n1. Download **$env:ZIP** below.`n2. Unzip it and double-click ``MP3Transcriber.exe`` inside the folder.`n3. If Windows shows *Windows protected your PC*, click **More info → Run anyway**.`n`nSee the README for settings."
+          $notes += "`n`n### How to install`n1. Download **$env:ZIP** below.`n2. Unzip it and double-click ``AudioTranscriber.exe`` inside the folder.`n3. If Windows shows *Windows protected your PC*, click **More info → Run anyway**.`n`nSee the README for settings."
           Set-Content -Encoding utf8 release-notes.md $notes
 
       - name: Publish GitHub Release

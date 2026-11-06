@@ -4,6 +4,25 @@ All notable changes to this project are listed here.
 Versions follow [Semantic Versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH` (breaking change / new feature / bug fix).
 
+## [1.3.0] - 2026-11-06
+
+### Changed
+- Renamed the program from `MP3Transcriber` to **`AudioTranscriber`**
+  (`AudioTranscriber.exe` in an `AudioTranscriber` folder), since it handles
+  far more than MP3s.
+- New default folders, grouped under one parent folder:
+  `Documents\Audio Transcriber\Inbox` (drop files here) and
+  `Documents\Audio Transcriber\Transcripts` (transcripts appear here).
+- Existing installs whose `config.json` names its own folders keep using
+  them; nothing moves automatically.
+
+### Upgrading from 1.2.0 or earlier
+- Unzip the new version and copy `config.json` and the `models` folder from
+  the old `MP3Transcriber` folder into the new `AudioTranscriber` folder.
+- To use the new folder names, move your files into the new folders and
+  update `input_folder` / `output_folder` in `config.json`. Move the hidden
+  `.transcriber-index.json` along with the transcripts.
+
 ## [1.2.0] - 2026-11-06
 
 ### Added

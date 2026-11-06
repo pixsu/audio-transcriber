@@ -29,7 +29,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -103,9 +103,10 @@ def get_documents_dir() -> Path:
 DOCUMENTS_DIR = get_documents_dir()
 
 DEFAULT_CONFIG = {
-    # Defaults: Documents\mp3 and Documents\transcribed of whoever runs it.
-    "input_folder": str(DOCUMENTS_DIR / "mp3"),
-    "output_folder": str(DOCUMENTS_DIR / "transcribed"),
+    # Defaults: Documents\Audio Transcriber\Inbox and \Transcripts of
+    # whoever runs it.
+    "input_folder": str(DOCUMENTS_DIR / "Audio Transcriber" / "Inbox"),
+    "output_folder": str(DOCUMENTS_DIR / "Audio Transcriber" / "Transcripts"),
     # tiny, base, small, medium, large-v3
     "model_size": "small",
     # "auto" = detect the language. Or force one, e.g. "en" or "tl" (Tagalog).
@@ -156,7 +157,7 @@ def load_config() -> dict:
             raise UserError(
                 f"{CONFIG_PATH} is not valid JSON ({e}).\n"
                 "Tip: backslashes in Windows paths must be doubled, "
-                r'e.g. "C:\\Users\\YourName\\Documents\\mp3"'
+                r'e.g. "C:\\Users\\YourName\\Documents\\Audio Transcriber\\Inbox"'
             ) from None
 
     config = dict(DEFAULT_CONFIG)
