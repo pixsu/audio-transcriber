@@ -29,7 +29,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -123,12 +123,18 @@ DEFAULT_CONFIG = {
     # Which waiting file to do next: "newest_first" (fresh recordings jump
     # the queue), "oldest_first" or "name" (alphabetical).
     "order": "newest_first",
+    # "fast" = take the model's single best guess at each step (~35% faster,
+    # same accuracy on clear speech in testing). "accurate" = compare 5
+    # guesses (beam search); can help with noisy audio, music or accents.
+    "speed": "fast",
     "poll_interval_seconds": 10,
     # "auto" = GPU if available, else CPU. Or force "cuda" or "cpu".
     "device": "auto",
 }
 
 VALID_MODELS = {"tiny", "base", "small", "medium", "large-v3"}
+# speed setting -> beam size (how many candidate wordings Whisper compares)
+SPEED_BEAM_SIZE = {"fast": 1, "accurate": 5}
 VALID_ORDERS = {"newest_first", "oldest_first", "name"}
 
 
@@ -172,6 +178,10 @@ def load_config() -> dict:
         config["language"] = None  # None tells faster-whisper to auto-detect
     else:
         config["language"] = str(lang).strip().lower()
+
+    config["speed"] = str(config.get("speed") or "").strip().lower()
+    if config["speed"] not in SPEED_BEAM_SIZE:
+        raise UserError(f'"speed" in {CONFIG_PATH} must be "fast" or "accurate"')
 
     config["order"] = str(config.get("order") or "").strip().lower()
     if config["order"] not in VALID_ORDERS:
@@ -363,6 +373,7 @@ def transcribe_file(model, audio_path: Path, txt_path: Path, config: dict) -> No
         language=config["language"],
         vad_filter=config["vad_filter"],  # skip silence
         hotwords=hint,
+        beam_size=SPEED_BEAM_SIZE[config["speed"]],
         # Check several 30s chunks when detecting the language, not just the
         # first one (song intros are often instrumental).
         language_detection_segments=4,
@@ -792,8 +803,8 @@ def main() -> None:
 
     log.info("Input folder : %s", input_dir)
     log.info("Output folder: %s", output_dir)
-    log.info("Model: %s | Language: %s | Timestamps: %s | Silence filter: %s",
-             config["model_size"], config["language"] or "auto-detect",
+    log.info("Model: %s (%s) | Language: %s | Timestamps: %s | Silence filter: %s",
+             config["model_size"], config["speed"], config["language"] or "auto-detect",
              "on" if config["include_timestamps"] else "off",
              "on" if config["vad_filter"] else "off")
     log.info("Queue order: %s | This PC: %s", config["order"].replace("_", " "), HOSTNAME)

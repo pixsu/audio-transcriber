@@ -138,6 +138,7 @@ changing them.
     "use_filename_hint": true,
     "file_types": [".mp3", ".mp4", ".m4a", ".wav", ".flac", ".ogg", ".opus",
                    ".webm", ".aac", ".wma", ".mkv", ".mov"],
+    "speed": "fast",
     "order": "newest_first",
     "poll_interval_seconds": 10,
     "device": "auto"
@@ -154,6 +155,7 @@ changing them.
 | `vad_filter` | `true` | Skips silence. Good for speech; **set to `false` for music** (see below). |
 | `use_filename_hint` | `true` | Passes the cleaned file name (e.g. `Artist Song Title`) to the model to help it spell names and titles. |
 | `file_types` | (list above) | File extensions to pick up. |
+| `speed` | `fast` | `fast` takes the model's single best guess at each step (about 35% faster; no accuracy loss on clear speech in testing). `accurate` compares 5 guesses, which can help with noisy audio, music or strong accents. |
 | `order` | `newest_first` | Which waiting file to do next: `newest_first` (fresh recordings first), `oldest_first`, or `name` (alphabetical). The folder is re-checked after every file, so a new file goes next even during a long backlog. |
 | `poll_interval_seconds` | `10` | How often to check the input folder for new files. |
 | `device` | `auto` | `auto` uses an NVIDIA GPU if available, otherwise the CPU. Force with `cuda` or `cpu`. |
@@ -162,9 +164,9 @@ changing them.
 
 | Use case | `model_size` | `vad_filter` | Notes |
 |---|---|---|---|
-| Meetings, lectures, podcasts | `small` or `medium` | `true` | Silence is skipped, which saves time. |
+| News, talk shows, interviews, meetings | `medium` + `"speed": "fast"` | `true` | ~19 min per hour of audio on a modern PC, or less when there are pauses. |
 | Songs and music | `medium` | `false` | The silence filter treats singing over music as "not speech" and would drop most of the song. |
-| Low-end PC | `base` or `small` | either | `small` is a good balance of speed and accuracy. |
+| Low-end PC | `small` + `"speed": "fast"` | either | The fastest setup that is still accurate on clear speech. |
 
 If the silence filter removes more than half of a file, the program prints a
 warning suggesting `"vad_filter": false`.
@@ -188,10 +190,16 @@ Files of any length work; a 1-hour recording needs about 250 MB of memory
 while it is processed. Speed on spoken audio (news-style speech), measured on
 an Intel Core i7-12700F, CPU only:
 
-| Model | Speed | 1-hour file | 1,000 hours of audio |
+| Setup | 1-hour file | 1,000 hours of audio | Word errors (clear speech) |
 |---|---|---|---|
-| `small` | ~4× real time | ~15 min | ~10 days non-stop |
-| `medium` | ~1.5–2× real time | ~30–40 min | ~3–4 weeks non-stop |
+| `medium`, `speed: accurate` | ~29 min | ~3 weeks non-stop | 0% |
+| **`medium`, `speed: fast`** (default speed) | **~19 min** | **~2 weeks non-stop** | **0%** |
+| `small`, `speed: accurate` | ~15 min | ~10 days non-stop | 1.1% |
+| `large-v3-turbo`, `speed: fast` | ~16 min | ~11 days non-stop | 1.1% (but fails on music) |
+
+Measured on a 5-minute news-style recording of clear speech. Real broadcasts
+(callers, background music, Taglish) may show slightly more errors, and
+office PCs slower than an i7-12700F will take longer.
 
 Running several files at once on the same PC does **not** help (the CPU is
 already fully used). To go faster:

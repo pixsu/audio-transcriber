@@ -4,6 +4,18 @@ All notable changes to this project are listed here.
 Versions follow [Semantic Versioning](https://semver.org/):
 `MAJOR.MINOR.PATCH` (breaking change / new feature / bug fix).
 
+## [1.2.0] - 2026-11-06
+
+### Added
+- New `speed` setting: `fast` (default) or `accurate`. `fast` uses greedy
+  decoding (beam size 1) and is about 35% faster: with the `medium` model a
+  1-hour recording takes ~19 minutes instead of ~29 on an i7-12700F, with no
+  accuracy loss on clear speech in testing. `accurate` keeps beam size 5.
+- The startup line shows the speed, e.g. `Model: medium (fast)`.
+
+### Changed
+- README: speed/accuracy table for all setups and updated recommendations.
+
 ## [1.1.0] - 2026-11-06
 
 ### Added
