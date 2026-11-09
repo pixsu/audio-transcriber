@@ -6,6 +6,14 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-09
+
+### Added
+- **First-run setup:** on first launch a short 3-step window asks where to
+  put audio files (Inbox), where transcripts go, and how accurate they should
+  be: Fast, Balanced (recommended) or Most accurate, with no model names.
+- **Tray tooltip with progress,** e.g. "Transcribing 3 of 12 · 45%".
+
 ### Fixed
 - The search box in the Completed tab now shows its grey hint text.
 
