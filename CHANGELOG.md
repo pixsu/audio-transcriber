@@ -13,8 +13,6 @@ Versions follow [Semantic Versioning](https://semver.org/):
   seconds, even during long silence or music without words. Before, they
   waited until Whisper produced the next line of text, which in a file with
   a long silent stretch could take many minutes.
-- With music labels on, a silent stretch at the very end of a file no longer
-  produces made-up lines after the `[SILENCE ...]` line.
 
 ## [1.10.0] - 2026-11-09
 
