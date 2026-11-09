@@ -425,6 +425,124 @@ def format_duration(seconds):
     return f"{minutes // 60} h {minutes % 60:02d} min"
 
 
+# How long each transcript took, kept in the Transcripts folder so it
+# survives restarts and is shared between PCs. One file per PC, so two PCs
+# never write the same file.
+def stats_path(folder):
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in T.HOSTNAME)
+    return Path(folder) / f".timings-{safe}.json"
+
+
+def load_timings(folder):
+    import json
+    took = {}
+    try:
+        files = list(Path(folder).glob(".timings-*.json"))
+    except OSError:
+        return took
+    for f in files:
+        try:
+            with open(f, encoding="utf-8") as fh:
+                took.update({k: float(v) for k, v in json.load(fh).items()})
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+    return took
+
+
+def save_timing(folder, txt_name, seconds):
+    import json
+    path = stats_path(folder)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    data[txt_name] = round(seconds, 1)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=1)
+        os.replace(tmp, path)
+    except OSError as e:
+        log.debug("Couldn't save timing: %s", e)
+
+
+UPDATE_DOWNLOAD_DIR_NAME = "AudioTranscriber-update"
+
+
+def clean_old_updates():
+    """Delete installers left over from earlier one-click updates."""
+    import tempfile
+    folder = Path(tempfile.gettempdir()) / UPDATE_DOWNLOAD_DIR_NAME
+    if not folder.is_dir():
+        return
+    freed = 0
+    for f in folder.iterdir():
+        try:
+            size = f.stat().st_size
+            f.unlink()
+            freed += size
+        except OSError:
+            pass  # still in use (e.g. the installer is running right now)
+    try:
+        folder.rmdir()
+    except OSError:
+        pass
+    if freed:
+        log.info("Removed an old update download (%.0f MB)", freed / 1e6)
+
+
+def system_summary():
+    """Plain-text facts about this PC, for problem reports."""
+    import platform
+    lines = [f"{T.APP_NAME} {T.__version__}",
+             f"Created: {datetime.now():%Y-%m-%d %H:%M}",
+             f"PC name: {T.HOSTNAME}",
+             f"Windows: {platform.platform()}",
+             f"Processor: {platform.processor()} ({os.cpu_count()} threads)",
+             f"Program folder: {T.APP_DIR}",
+             f"Installed with installer: {can_self_update()}"]
+    try:
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        m = MEMORYSTATUSEX()
+        m.dwLength = ctypes.sizeof(m)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+        lines.append(f"Memory: {m.ullTotalPhys / 2**30:.1f} GB "
+                     f"({m.ullAvailPhys / 2**30:.1f} GB free)")
+    except Exception:
+        pass
+    try:
+        free = shutil.disk_usage(T.APP_DIR).free
+        lines.append(f"Free disk space (program drive): {free / 2**30:.1f} GB")
+    except OSError:
+        pass
+    return "\n".join(lines)
+
+
+def make_report_zip(issues, target_dir):
+    """Zip the log, settings and PC details (never audio or transcripts)."""
+    import zipfile
+    name = f"AudioTranscriber-report-{T.HOSTNAME}-{datetime.now():%Y%m%d-%H%M}.zip"
+    target = Path(target_dir) / name
+    issue_lines = [f"{kind.upper()}  {name_}  ({datetime.fromtimestamp(when):%Y-%m-%d %H:%M})"
+                   f"\n    {reason}" for name_, (kind, reason, when) in issues.items()]
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("about-this-pc.txt", system_summary())
+        z.writestr("issues.txt", "\n".join(issue_lines) or "No issues listed.")
+        if T.CONFIG_PATH.exists():
+            z.write(T.CONFIG_PATH, "config.json")
+        for log_file in sorted(T.APP_DIR.glob(T.LOG_PATH.name + "*")):
+            z.write(log_file, log_file.name)
+    return target
+
+
 def format_when(timestamp):
     ago = time.time() - timestamp
     if ago < 60:
@@ -559,7 +677,7 @@ def download_update(info, progress):
     import hashlib
     import tempfile
     import urllib.request
-    folder = Path(tempfile.gettempdir()) / "AudioTranscriber-update"
+    folder = Path(tempfile.gettempdir()) / UPDATE_DOWNLOAD_DIR_NAME
     folder.mkdir(exist_ok=True)
     for old in folder.glob("*.exe"):
         try:
@@ -1077,6 +1195,7 @@ def build_app_class():
                 self.withdraw()
             self.after(200, self.tick)
             self.after(8000, self.schedule_update_check)
+            threading.Thread(target=clean_old_updates, name="cleanup", daemon=True).start()
 
         # =================================================================
         # Layout
@@ -1106,6 +1225,7 @@ def build_app_class():
             self.menu.add_separator()
             self.menu.add_command(label="Retry all issues", command=self.retry_all)
             self.menu.add_command(label="Open log file", command=lambda: open_path(T.LOG_PATH))
+            self.menu.add_command(label="Create problem report...", command=self.send_report)
             self.menu.add_command(label="Edit config.json (advanced)", command=self.edit_config)
             self.menu.add_separator()
             self.menu.add_command(label="Check for updates", command=self.check_updates_now)
@@ -2162,17 +2282,24 @@ def build_app_class():
                                  font=font(11, "normal"), text_color=("gray20", "gray80"),
                                  wraplength=430).pack(fill="x")
                 parts = []
+                duration = None
                 source = self.source_of.get(path.name.lower()) or self.guess_source(path)
                 if source and self.engine.inbox:
                     audio = self.engine.inbox / source
                     if audio.exists():
-                        parts.append(media_summary(self.details.get(audio)))
+                        info = self.details.get(audio)
+                        duration = (info or {}).get("duration")
+                        parts.append(media_summary(info))
                 words = (self.details.get(path, count_words) or {}).get("words")
                 if words is not None:
                     parts.append(f"{words:,} words")
                 parts.append(format_when(mtime))
-                if path.name in self.took:
-                    parts.append(f"took {format_duration(self.took[path.name])}")
+                took = self.took.get(path.name)
+                if took and duration and duration >= 60:
+                    parts.append(f"{format_duration(duration)} audio \u2192 "
+                                 f"{format_duration(took)}")
+                elif took:
+                    parts.append(f"took {format_duration(took)}")
                 meta = "  \u00b7  ".join(parts)
                 ctk.CTkLabel(text, text=meta, anchor="w", text_color=GRAY, font=font(11)
                              ).pack(fill="x")
@@ -2190,6 +2317,8 @@ def build_app_class():
             top = ctk.CTkFrame(frame, fg_color="transparent")
             top.pack(fill="x", pady=(0, 4))
             ghost_button(top, "Retry all", self.retry_all, width=80).pack(side="right", padx=8)
+            ghost_button(top, "Send report", self.send_report, width=100
+                         ).pack(side="right", padx=(8, 0))
             items = sorted(issues.items(), key=lambda kv: kv[1][2], reverse=True)
             for name, (kind, reason, when) in items:
                 row = self._row(frame)
@@ -2210,6 +2339,35 @@ def build_app_class():
                               command=lambda n=name: self.retry_one(n)
                               ).pack(side="right", padx=(4, 10))
 
+        def send_report(self):
+            """Zip the log, settings and PC details onto the Desktop to email."""
+            if not messagebox.askokcancel(
+                    "Create a problem report",
+                    "This saves a small zip file on your Desktop with the program's log, "
+                    "its settings and basic details about this PC, for you to email to "
+                    "whoever looks after Audio Transcriber.\n\nIt contains file names "
+                    "and folder paths, but no audio and no transcripts.", parent=self):
+                return
+            desktop = Path.home() / "Desktop"
+            try:
+                import ctypes.wintypes
+                buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
+                if ctypes.windll.shell32.SHGetFolderPathW(None, 0x0010, None, 0, buf) == 0:
+                    desktop = Path(buf.value)  # Desktop may be in OneDrive
+            except Exception:
+                pass
+            try:
+                path = make_report_zip(self.engine.snapshot()["issues"], desktop)
+            except OSError as e:
+                messagebox.showerror("Create a problem report",
+                                     f"Couldn't create the report:\n{e}", parent=self)
+                return
+            log.info("Problem report saved: %s", path)
+            show_in_folder(path)
+            messagebox.showinfo("Report saved",
+                                f"Saved to your Desktop:\n{path.name}\n\nAttach it to an email "
+                                "describing what went wrong.", parent=self)
+
         def retry_one(self, name):
             self.engine.retry([name])
             log.info("Retrying %s", name)
@@ -2229,6 +2387,7 @@ def build_app_class():
                     self.source_of = {k.lower(): v for k, v in json.load(f).items()}
             except (OSError, ValueError):
                 self.source_of = {}
+            self.took.update(load_timings(self.output_dir()))
 
         def done_today(self):
             today = datetime.now().date()
@@ -2259,6 +2418,7 @@ def build_app_class():
             name = data["audio"].name
             if kind == "done":
                 self.took[data["txt"].name] = data["seconds"]
+                save_timing(data["txt"].parent, data["txt"].name, data["seconds"])
                 self.notify("Transcript ready", f"{name} ({format_duration(data['seconds'])})")
             elif kind == "failed":
                 self.notify("Could not transcribe", f"{name}: {shorten(data['error'], 120)}")

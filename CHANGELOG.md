@@ -6,6 +6,21 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-09
+
+### Added
+- **Speed in the Completed tab:** each transcript shows how long it took
+  next to the audio length, e.g. "1 h 05 min audio → 28 min". Times are kept
+  in the Transcripts folder (one small hidden file per PC), so they survive
+  restarts and are shared between PCs.
+- **Problem reports:** **Send report** in the Issues tab (and
+  **Menu → Create problem report…**) saves a zip on the Desktop with the
+  log, settings and basic PC details, ready to email. No audio or
+  transcripts are included.
+
+### Changed
+- Installers left over from one-click updates are deleted automatically.
+
 ## [1.8.0] - 2026-11-09
 
 ### Added
