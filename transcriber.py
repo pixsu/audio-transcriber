@@ -29,7 +29,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.10.0"
+__version__ = "1.10.1"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -456,6 +456,28 @@ def find_music(audio, hooks: Hooks):
 
 def transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
                     hooks: Hooks = NO_HOOKS) -> None:
+    """Transcribe one file (see _transcribe_file), checking for Pause, Skip
+    and Stop before every 30-second chunk Whisper reads. Without this they
+    only take effect when a line of text comes out, which during a long
+    stretch of silence or music without words can take many minutes."""
+    original = model.encode
+
+    def encode_checked(*args, **kwargs):
+        hooks.checkpoint()
+        return original(*args, **kwargs)
+
+    model.encode = encode_checked
+    try:
+        _transcribe_file(model, audio_path, txt_path, config, hooks)
+    finally:
+        try:
+            del model.encode  # back to the normal method
+        except AttributeError:
+            pass
+
+
+def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
+                     hooks: Hooks = NO_HOOKS) -> None:
     """Transcribe one audio/video file and write the .txt file.
 
     The text is first written to a temporary ".part" file and renamed at the
