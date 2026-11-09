@@ -39,6 +39,7 @@ use `"model_size": "tiny"` for quick tests.
 | File | What's in it |
 |---|---|
 | `transcriber.py` | The engine: settings, model loading, folder watching, queue, multi-PC claims, transcription. Runs on its own in a console. |
+| `music_detect.py` | Music detection (YAMNet sound classifier) for the `[MUSIC]` labels. |
 | `app.py` | The window (CustomTkinter), tray icon, settings panel, update check. Talks to the engine through the `Hooks` class. |
 | `build.bat` | Builds the program folder, the zip and (with Inno Setup 6) the installer. |
 | `installer.iss` | Inno Setup script for `AudioTranscriber-Setup.exe`. |

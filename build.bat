@@ -42,6 +42,7 @@ echo Building (this takes a few minutes)...
     --collect-all customtkinter ^
     --collect-all tkinterdnd2 ^
     --hidden-import pystray._win32 ^
+    --hidden-import music_detect ^
     --copy-metadata faster-whisper ^
     --copy-metadata huggingface_hub ^
     --copy-metadata tokenizers ^

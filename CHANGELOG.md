@@ -6,6 +6,29 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-09
+
+### Added
+- **Label music and songs** (Settings → Options, off by default): songs,
+  jingles and other music are still transcribed, with `MUSIC` in front of
+  their lines, e.g. `[MUSIC 00:01:23 → 00:01:30] lyrics`. Talk over a music
+  bed stays unlabelled. Uses a small offline sound classifier (YAMNet,
+  14 MB, downloaded once and checked against a fixed fingerprint) and adds
+  only a few seconds per hour of audio.
+- **Dead air is skipped and marked** when music labels are on: stretches
+  with no sound for 10 seconds or more are not transcribed and appear as
+  `[SILENCE 00:52:40 → 01:00:30]`. A mostly silent hour finishes in minutes,
+  and Whisper can't invent text in the silence.
+
+### Changed
+- With music labels on, **Skip silence** is not used, because it drops most
+  singing.
+
+### Known limits
+- Lyrics, especially sung Tagalog, are less accurate than speech.
+- Very quiet or muffled music (e.g. a low-quality anthem recording) may not
+  be labelled.
+
 ## [1.9.0] - 2026-11-09
 
 ### Added

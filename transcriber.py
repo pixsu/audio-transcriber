@@ -29,7 +29,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.9.0"
+__version__ = "1.10.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -154,6 +154,9 @@ DEFAULT_CONFIG = {
     # "auto" = detect the language. Or force one, e.g. "en" or "tl" (Tagalog).
     "language": "auto",
     "include_timestamps": False,
+    # Put [MUSIC] in front of lines where music or singing dominates (songs,
+    # jingles). Everything is still transcribed.
+    "label_music": False,
     # Skip silence. Good for speech recordings, but it also throws away
     # singing over music - set to false for songs.
     "vad_filter": True,
@@ -256,6 +259,7 @@ def load_config() -> dict:
     config["device"] = str(config.get("device") or "auto").strip().lower()
     config["include_timestamps"] = bool(config["include_timestamps"])
     config["vad_filter"] = bool(config["vad_filter"])
+    config["label_music"] = bool(config.get("label_music"))
     config["use_filename_hint"] = bool(config["use_filename_hint"])
     # Normalise to lowercase ".ext" so "MP4" or "mp4" both work.
     config["file_types"] = {
@@ -425,6 +429,31 @@ def is_hallucination(text: str) -> bool:
     return norm in HALLUCINATIONS or norm.startswith("subtitles by") or "amara org" in norm
 
 
+_music_detector = None
+
+
+def find_music(audio, hooks: Hooks):
+    """Music scores for the audio, or None if music detection isn't possible
+    (the transcript is then simply written without labels)."""
+    global _music_detector
+    try:
+        import music_detect
+        if _music_detector is None:
+            _music_detector = music_detect.MusicDetector(music_detect.ensure_model(MODELS_DIR))
+        started = time.time()
+        scores = _music_detector.scan(audio, hooks.checkpoint)
+        log.info("   Music detection: %d%% of the file is music (%.0fs)",
+                 100 * sum(1 for m, s in scores if m >= 0.5) / max(1, len(scores)),
+                 time.time() - started)
+        return scores
+    except (Stopped, Skipped):
+        raise
+    except Exception as e:
+        log.warning("   Music detection didn't work (%s); transcribing without "
+                    "music labels.", e)
+        return None
+
+
 def transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
                     hooks: Hooks = NO_HOOKS) -> None:
     """Transcribe one audio/video file and write the .txt file.
@@ -436,32 +465,62 @@ def transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
     hint = filename_hint(audio_path) if config["use_filename_hint"] else None
     if hint:
         log.info('   Using hint from file name: "%s"', hint)
+    # The silence filter drops most singing, so with music labels on (the
+    # songs are wanted in the transcript) it's not used. Instead only true
+    # dead air is skipped and marked [SILENCE ...].
+    use_vad = config["vad_filter"] and not config.get("label_music")
+    source, music, gaps, clips = str(audio_path), None, [], "0"
+    if config.get("label_music"):
+        import music_detect
+        from faster_whisper.audio import decode_audio
+        source = decode_audio(str(audio_path))  # decoded once, used for all steps
+        duration = len(source) / music_detect.SAMPLE_RATE
+        music = find_music(source, hooks)
+        gaps = music_detect.find_silence(source)
+        if gaps:
+            silent = sum(b - a for a, b in gaps)
+            log.info("   Dead air: %d stretch(es), %s in total (skipped)",
+                     len(gaps), format_timestamp(silent))
+            clips = music_detect.sound_clips(gaps, duration)
 
-    segments, info = model.transcribe(
-        str(audio_path),
-        language=config["language"],
-        vad_filter=config["vad_filter"],  # skip silence
-        hotwords=hint,
-        beam_size=SPEED_BEAM_SIZE[config["speed"]],
-        # Check several 30s chunks when detecting the language, not just the
-        # first one (song intros are often instrumental).
-        language_detection_segments=4,
-    )
+    if not clips:  # the whole file is silent
+        segments, info = iter(()), None
+    else:
+        segments, info = model.transcribe(
+            source,
+            clip_timestamps=clips,
+            language=config["language"],
+            vad_filter=use_vad,  # skip silence
+            hotwords=hint,
+            beam_size=SPEED_BEAM_SIZE[config["speed"]],
+            # Check several 30s chunks when detecting the language, not just the
+            # first one (song intros are often instrumental).
+            language_detection_segments=4,
+        )
 
-    if config["language"] is None:
+    if info is None:
+        log.info("   The whole file is silent.")
+    elif config["language"] is None:
         log.info("   Detected language: %s (%.0f%% sure), audio length %s",
                  info.language, info.language_probability * 100,
                  format_timestamp(info.duration))
 
     # The silence filter can mistake singing over music for "no speech".
     # Warn if it threw away most of the file.
-    kept = getattr(info, "duration_after_vad", None)
-    if config["vad_filter"] and kept is not None and info.duration > 30 and kept < info.duration * 0.5:
+    kept = getattr(info, "duration_after_vad", None) if info else None
+    if use_vad and kept is not None and info.duration > 30 and kept < info.duration * 0.5:
         log.warning("   Silence filter kept only %s of %s. If this is music, turn off "
                     '"Skip silence" (or set "vad_filter": false in config.json).',
                     format_timestamp(kept), format_timestamp(info.duration))
 
     lines = []
+    pending_gaps = list(gaps)
+
+    def add_gaps(before):
+        while pending_gaps and pending_gaps[0][0] <= before:
+            a, b = pending_gaps.pop(0)
+            lines.append(f"[SILENCE {format_timestamp(a)} → {format_timestamp(b)}]")
+
     last_report = time.time()
     hooks.progress(audio_path, 0)
     for seg in segments:  # segments are produced as the audio is processed
@@ -471,8 +530,14 @@ def transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
         text = seg.text.strip()
         if not text or is_hallucination(text):
             continue
+        add_gaps(seg.start)
+        tag = "MUSIC " if music is not None and music_detect.is_music(
+            music, seg.start, seg.end) else ""
         if config["include_timestamps"]:
-            lines.append(f"[{format_timestamp(seg.start)} → {format_timestamp(seg.end)}] {text}")
+            lines.append(f"[{tag}{format_timestamp(seg.start)} → "
+                         f"{format_timestamp(seg.end)}] {text}")
+        elif tag:
+            lines.append(f"[MUSIC] {text}")
         else:
             lines.append(text)
 
@@ -481,6 +546,8 @@ def transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
             pct = min(100, seg.end / info.duration * 100)
             log.info("   ... %d%%", pct)
             last_report = time.time()
+
+    add_gaps(float("inf"))
 
     # Unique temp name per PC and process, so two PCs can never write into
     # the same temp file on a shared folder.

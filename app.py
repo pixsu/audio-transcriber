@@ -62,13 +62,14 @@ MODE_CHOICES = {"Fast": "fast", "Accurate": "accurate"}
 DATE_FILTERS = {"Any time": None, "Today": 0, "Last 7 days": 7, "Last 30 days": 30}
 # Settings the window manages; "Reset to defaults" restores these (not folders).
 WINDOW_SETTINGS = ("speed", "model_size", "language", "order", "device",
-                   "vad_filter", "include_timestamps", "use_filename_hint",
+                   "vad_filter", "include_timestamps", "label_music", "use_filename_hint",
                    "check_for_updates")
 
 # Friendly names for the Apply confirmation and the log.
 SETTING_NAMES = {
     "speed": "Mode", "model_size": "Quality", "language": "Language", "order": "Order",
     "device": "Device", "vad_filter": "Skip silence", "include_timestamps": "Add timestamps",
+    "label_music": "Label music and songs",
     "use_filename_hint": "Use file name as a hint", "input_folder": "Inbox folder",
     "output_folder": "Transcripts folder", "_autostart": "Start with Windows",
     "check_for_updates": "Check for updates",
@@ -1420,11 +1421,15 @@ def build_app_class():
                                            "songs, or singing may be missed."),
                 "include_timestamps": self._switch(card, 2, "Add timestamps", "include_timestamps",
                                                    "e.g. [00:01:15 → 00:01:20] before each line."),
-                "use_filename_hint": self._switch(card, 4, "Use file name as a hint",
+                "label_music": self._switch(card, 4, "Label music and songs", "label_music",
+                                            "Adds [MUSIC] before song and jingle lines. "
+                                            "Everything is still transcribed; dead air is "
+                                            "marked [SILENCE]. Downloads 14 MB once."),
+                "use_filename_hint": self._switch(card, 6, "Use file name as a hint",
                                                   "use_filename_hint",
                                                   "Helps spell names and song titles."),
             }
-            ctk.CTkFrame(card, height=10, fg_color="transparent").grid(row=6, column=0)
+            ctk.CTkFrame(card, height=10, fg_color="transparent").grid(row=8, column=0)
 
             card = self._section(panel, "Folders")
             self.folder_labels = {}
@@ -1510,7 +1515,7 @@ def build_app_class():
                 return str(value).strip().lower()
             if key in ("input_folder", "output_folder"):
                 return str(Path(value))
-            if key in ("vad_filter", "include_timestamps", "use_filename_hint",
+            if key in ("vad_filter", "include_timestamps", "label_music", "use_filename_hint",
                        "check_for_updates"):
                 return bool(value)
             return value

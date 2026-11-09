@@ -240,6 +240,7 @@ with unapplied changes asks whether to apply them.
 | Order | `order` |
 | Skip silence | `vad_filter` |
 | Add timestamps | `include_timestamps` |
+| Label music and songs | `label_music` |
 | Use file name as a hint | `use_filename_hint` |
 | Folders → Change | `input_folder`, `output_folder` |
 | Device | `device` |
@@ -254,6 +255,7 @@ only in `config.json`; restart the program after editing it by hand.
     "model_size": "small",
     "language": "auto",
     "include_timestamps": false,
+    "label_music": false,
     "vad_filter": true,
     "use_filename_hint": true,
     "file_types": [".mp3", ".mp4", ".m4a", ".wav", ".flac", ".ogg", ".opus",
@@ -272,6 +274,7 @@ only in `config.json`; restart the program after editing it by hand.
 | `model_size` | `small` | `tiny`, `base`, `small`, `medium` or `large-v3`. Larger is more accurate but slower and uses more memory. See [Choosing a model](#choosing-a-model). |
 | `language` | `auto` | `auto` detects the language. Or force one with a code, e.g. `en` (English) or `tl` (Tagalog). |
 | `include_timestamps` | `false` | `true` writes lines like `[00:01:23 → 00:01:30] text here`. |
+| `label_music` | `false` | `true` puts `MUSIC` in front of lines where music or singing dominates (songs, jingles), e.g. `[MUSIC 00:01:23 → 00:01:30] lyrics`, or `[MUSIC] lyrics` without timestamps. Everything is still transcribed; talk over a music bed stays unlabelled. With this on, **Skip silence** is not used (it drops singing); instead only true dead air (no sound for 10 seconds or more) is skipped and marked, e.g. `[SILENCE 00:52:40 → 01:00:30]`. Uses a small sound classifier (YAMNet, 14 MB, downloaded once into `models\yamnet`) and adds only a few seconds per hour of audio. |
 | `vad_filter` | `true` | Skips silence. Good for speech; **set to `false` for music** (see below). |
 | `use_filename_hint` | `true` | Passes the cleaned file name (e.g. `Artist Song Title`) to the model to help it spell names and titles. |
 | `file_types` | (list above) | File extensions to pick up. |
@@ -445,6 +448,7 @@ next to the scripts.
 ```text
 app.py                  The window, tray icon and settings panel
 transcriber.py          The transcription engine (also runs on its own in a console)
+music_detect.py         Finds music parts for the "Label music and songs" setting
 requirements.txt        Top-level Python dependencies (loose versions)
 requirements-lock.txt   Exact tested versions, used by build.bat
 build.bat               One-click build script (venv + install + PyInstaller + installer)

@@ -16,6 +16,7 @@ on:
     tags: ["v*"]
     paths:
       - transcriber.py
+      - music_detect.py
       - app.py
       - installer.iss
       - requirements-lock.txt
