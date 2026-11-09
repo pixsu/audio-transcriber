@@ -6,6 +6,13 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.10.2] - 2026-11-09
+
+### Fixed
+- The update notice no longer squeezes the **Update now** button in a
+  narrow window. Its text is now two short lines (e.g. "Version 1.10.2 is
+  available" / "You have 1.10.1"), also while downloading and installing.
+
 ## [1.10.1] - 2026-11-09
 
 ### Fixed

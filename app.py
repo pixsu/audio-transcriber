@@ -1237,17 +1237,26 @@ def build_app_class():
             self.banner = ctk.CTkFrame(parent, corner_radius=12, border_width=1,
                                        fg_color=("#e8f1fb", "#1d2b3a"),
                                        border_color=("#9cc3ea", "#2f5378"))
-            self.banner_text = ctk.CTkLabel(self.banner, text="", anchor="w",
-                                            font=font(13, "bold"))
-            self.banner_text.pack(side="left", padx=16, pady=12)
+            # Buttons are packed first so they always keep their full size;
+            # the text gets the space that's left.
             ghost_button(self.banner, "Later", self.dismiss_update, width=64, height=30
-                         ).pack(side="right", padx=(4, 12))
+                         ).pack(side="right", padx=(4, 12), pady=10)
             ghost_button(self.banner, "What's new", lambda: self.open_url(
                 (self.update_info or {}).get("page")), width=96, height=30
-                         ).pack(side="right", padx=4)
-            self.update_btn = ctk.CTkButton(self.banner, text="Update now", width=110,
+                         ).pack(side="right", padx=4, pady=10)
+            self.update_btn = ctk.CTkButton(self.banner, text="Update now", width=120,
                                             height=30, command=self.start_update)
-            self.update_btn.pack(side="right", padx=4)
+            self.update_btn.pack(side="right", padx=4, pady=10)
+            # Two short lines (title + detail) so the text fits next to the
+            # buttons even in a narrow window.
+            texts = ctk.CTkFrame(self.banner, fg_color="transparent")
+            texts.pack(side="left", fill="x", expand=True, padx=16, pady=8)
+            self.banner_text = ctk.CTkLabel(texts, text="", anchor="w", font=font(13, "bold"),
+                                            height=18)
+            self.banner_text.pack(fill="x")
+            self.banner_sub = ctk.CTkLabel(texts, text="", anchor="w", text_color=GRAY,
+                                           font=font(11), height=16)
+            self.banner_sub.pack(fill="x")
             self.update_state = None   # None, "downloading", "waiting", "installing"
 
         def _build_status_card(self, parent):
@@ -1836,14 +1845,17 @@ def build_app_class():
             info = self.update_info
             if self.update_state:
                 return  # already updating
-            self.banner_text.configure(
-                text=f"Version {info['version']} is available  "
-                     f"(you have {T.__version__})")
+            self.set_banner(f"Version {info['version']} is available",
+                            f"You have {T.__version__}")
             one_click = bool(info.get("sha256")) and can_self_update()
             self.update_btn.configure(text="Update now" if one_click else "Download", command=self.start_update,
                                       state="normal")
             if not self.banner.winfo_ismapped():
                 self.banner.pack(fill="x", pady=(0, 12), before=self.status_card)
+
+        def set_banner(self, title, detail=""):
+            self.banner_text.configure(text=title)
+            self.banner_sub.configure(text=detail)
 
         def start_update(self):
             info = self.update_info or {}
@@ -1854,7 +1866,8 @@ def build_app_class():
                 return
             self.update_state = "downloading"
             self.update_btn.configure(state="disabled", text="Downloading...")
-            self.banner_text.configure(text=f"Downloading version {info['version']}...")
+            self.set_banner(f"Downloading version {info['version']}...",
+                            "You can keep working.")
             log.info("Downloading update %s", info["version"])
 
             def progress(fraction):
@@ -1875,7 +1888,7 @@ def build_app_class():
                 self.update_state = None
                 self.show_banner()
                 self.update_btn.configure(text="Try again")
-                self.banner_text.configure(text=f"Update failed: {error}")
+                self.set_banner("Update failed", shorten(error, 90))
                 return
             log.info("Update downloaded and verified: %s", path)
             self.update_path = path
@@ -1888,8 +1901,8 @@ def build_app_class():
                 return
             busy = self.engine.snapshot()["file"]
             if busy:
-                self.banner_text.configure(
-                    text=f"Update ready. It installs when {shorten(busy, 40)} is done.")
+                self.set_banner("Update ready",
+                                f"It installs when {shorten(busy, 50)} is done.")
                 self.update_btn.configure(text="Install now", state="normal",
                                           command=self.install_update_now)
                 self.after(2000, self.install_when_idle)
@@ -1906,8 +1919,8 @@ def build_app_class():
                 return
             self.update_state = "installing"
             self.update_btn.configure(state="disabled", text="Installing...")
-            self.banner_text.configure(text="Installing the update. The program "
-                                            "reopens in a few seconds...")
+            self.set_banner("Installing the update...",
+                            "The program reopens in a few seconds.")
             self.update_idletasks()
             log.info("Installing update from %s", self.update_path)
             try:
@@ -1920,7 +1933,7 @@ def build_app_class():
             except OSError as e:
                 self.update_state = None
                 self.show_banner()
-                self.banner_text.configure(text=f"Couldn't start the installer: {e}")
+                self.set_banner("Couldn't start the installer", shorten(str(e), 90))
                 return
             self.after(500, lambda: self.quit_app(force=True))
 
