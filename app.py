@@ -939,6 +939,7 @@ def build_app_class():
             self.log_lines = queue.Queue()
             self.tray = None
             self.told_about_tray = False
+            self._batch_file, self._batch_done = None, 0
             self.quitting = False
             self.copying = 0                # files being copied into the Inbox
             self.took = {}                  # transcript name -> seconds (this session)
@@ -1787,8 +1788,31 @@ def build_app_class():
                                "into the Inbox...")
             self.bar_left.configure(text="   ·   ".join(left))
             if self.tray:
-                self.tray.title = f"{T.APP_NAME} – {title}" + (
-                    f" ({s['percent']:.0f}%)" if s["file"] else "")
+                self.tray.title = self.tray_tooltip(s, title)
+
+        def tray_tooltip(self, s, title):
+            """e.g. "Transcribing 3 of 12 · 45%". Counts files in the current
+            batch: it starts again once the queue has run empty."""
+            current = s["file"]
+            if current != self._batch_file:
+                if self._batch_file:
+                    self._batch_done += 1
+                self._batch_file = current
+            if not current and not s["queue"]:
+                self._batch_done = 0
+            if current:
+                pos = self._batch_done + 1
+                total = pos + len(s["queue"])
+                text = f"{title} {pos} of {total} · {s['percent']:.0f}%"
+                if s["phase"] == "paused":
+                    text = f"Paused · {pos} of {total} · {s['percent']:.0f}%"
+            elif s["queue"]:
+                text = f"{title} · {len(s['queue'])} waiting"
+            elif s["phase"] == "idle":
+                text = "All caught up"
+            else:
+                text = title
+            return f"{T.APP_NAME}\n{text}"[:127]  # Windows limit
 
         def _show(self, widget, visible, **pack):
             if visible and not widget.winfo_ismapped():
@@ -2215,6 +2239,140 @@ def run_console():
     T.cli()
 
 
+QUALITY_PRESETS = [
+    # label, model, description
+    ("Fast", "small",
+     "Quickest. Good for clear speech. About 480 MB download."),
+    ("Balanced", "medium",
+     "Recommended. Good for Tagalog, Taglish and English. About 1.5 GB."),
+    ("Most accurate", "large-v3",
+     "Best results, but slow without an NVIDIA graphics card. About 3 GB."),
+]
+
+
+def run_setup_wizard():
+    """First launch: pick the Inbox, the Transcripts folder and a quality.
+    Returns the chosen settings, or None if the window was closed."""
+    import customtkinter as ctk
+    from tkinter import filedialog
+
+    defaults = T.DEFAULT_CONFIG
+    choice = {"input_folder": defaults["input_folder"],
+              "output_folder": defaults["output_folder"],
+              "model_size": "medium"}
+    result = {}
+
+    win = ctk.CTk()
+    win.title(f"Set up {T.APP_NAME}")
+    win.geometry("580x480")
+    win.resizable(False, False)
+    try:
+        from PIL import ImageTk
+        win._icon = ImageTk.PhotoImage(make_icon_image(64))
+        win.iconphoto(True, win._icon)
+    except Exception:
+        pass
+
+    step_lbl = ctk.CTkLabel(win, text="", text_color=GRAY)
+    step_lbl.pack(anchor="w", padx=28, pady=(22, 0))
+    body = ctk.CTkFrame(win, fg_color="transparent")
+    nav = ctk.CTkFrame(win, fg_color="transparent")
+    nav.pack(side="bottom", fill="x", padx=28, pady=20)
+    back_btn = ctk.CTkButton(nav, text="Back", width=90, fg_color="transparent",
+                             border_width=1, text_color=("gray10", "gray90"))
+    next_btn = ctk.CTkButton(nav, text="Next", width=110)
+    next_btn.pack(side="right")
+    body.pack(fill="both", expand=True, padx=28, pady=(4, 0))
+    page = [0]
+
+    def heading(text, sub):
+        ctk.CTkLabel(body, text=text, font=ctk.CTkFont(size=20, weight="bold"),
+                     anchor="w").pack(fill="x", pady=(4, 6))
+        ctk.CTkLabel(body, text=sub, anchor="w", justify="left", wraplength=500,
+                     text_color=GRAY).pack(fill="x", pady=(0, 16))
+
+    def folder_page(key, title, sub):
+        heading(title, sub)
+        row = ctk.CTkFrame(body, fg_color="transparent")
+        row.pack(fill="x")
+        entry = ctk.CTkEntry(row, height=34)
+        entry.insert(0, choice[key])
+        entry.configure(state="readonly")
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        def browse():
+            path = filedialog.askdirectory(parent=win, initialdir=choice[key],
+                                           title=title, mustexist=False)
+            if path:
+                choice[key] = str(Path(path))
+                entry.configure(state="normal")
+                entry.delete(0, "end")
+                entry.insert(0, choice[key])
+                entry.configure(state="readonly")
+        ctk.CTkButton(row, text="Change...", width=100, height=34,
+                      command=browse).pack(side="right")
+        ctk.CTkLabel(body, text="The folder is created if it doesn't exist. "
+                                "A shared network folder works too.",
+                     anchor="w", text_color=GRAY).pack(fill="x", pady=(10, 0))
+
+    def quality_page():
+        heading("How accurate should transcripts be?",
+                "You can change this later in Settings.")
+        var = ctk.StringVar(value=choice["model_size"])
+        for label, model, desc in QUALITY_PRESETS:
+            card = ctk.CTkFrame(body, corner_radius=8)
+            card.pack(fill="x", pady=4)
+            ctk.CTkRadioButton(card, text=label, variable=var, value=model,
+                               font=ctk.CTkFont(weight="bold"),
+                               command=lambda m=model: choice.update(model_size=m)
+                               ).pack(anchor="w", padx=12, pady=(10, 0))
+            ctk.CTkLabel(card, text=desc, anchor="w", justify="left", wraplength=440,
+                         text_color=GRAY).pack(fill="x", padx=42, pady=(0, 8))
+
+    pages = [
+        lambda: folder_page("input_folder", "Where will you put audio files?",
+                            "This is your Inbox. Any audio or video file placed here "
+                            "is transcribed automatically."),
+        lambda: folder_page("output_folder", "Where should transcripts go?",
+                            "Finished transcripts are saved here as text files."),
+        quality_page,
+    ]
+
+    def show():
+        for w in body.winfo_children():
+            w.destroy()
+        step_lbl.configure(text=f"Step {page[0] + 1} of {len(pages)}")
+        pages[page[0]]()
+        last = page[0] == len(pages) - 1
+        next_btn.configure(text="Start" if last else "Next")
+        if page[0]:
+            back_btn.pack(side="left")
+        else:
+            back_btn.pack_forget()
+
+    def go(delta):
+        if page[0] == 1 and delta > 0 and (
+                Path(choice["output_folder"]) == Path(choice["input_folder"])):
+            from tkinter import messagebox
+            messagebox.showwarning(T.APP_NAME, "Please pick a different folder from the "
+                                   "Inbox, so transcripts don't get mixed in with the "
+                                   "audio files.", parent=win)
+            return
+        if page[0] == len(pages) - 1 and delta > 0:
+            result.update(choice)
+            win.destroy()
+            return
+        page[0] += delta
+        show()
+
+    next_btn.configure(command=lambda: go(1))
+    back_btn.configure(command=lambda: go(-1))
+    win.bind("<Return>", lambda e: go(1))
+    show()
+    win.mainloop()
+    return result or None
+
+
 def run_window(start_hidden):
     # Sharper text on high-resolution screens.
     try:
@@ -2222,6 +2380,21 @@ def run_window(start_hidden):
     except Exception:
         pass
     T.setup_logging()
+    if not T.CONFIG_PATH.exists() and not start_hidden:
+        import customtkinter as ctk
+        ctk.set_appearance_mode("system")
+        ctk.set_default_color_theme("blue")
+        chosen = run_setup_wizard()
+        if not chosen:
+            sys.exit(0)  # closed before finishing: ask again next time
+        for key in ("input_folder", "output_folder"):
+            try:
+                Path(chosen[key]).mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                show_error(f"Couldn't create the folder:\n{chosen[key]}\n\n{e}")
+                sys.exit(1)
+        T.save_raw_config({**T.DEFAULT_CONFIG, **chosen})
+        log.info("First-run setup saved: %s", chosen)
     try:
         config = T.load_config()
         inbox = Path(config["input_folder"])
