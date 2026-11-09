@@ -28,3 +28,7 @@ Releases are built from this repository's source by GitHub Actions
 ([build.yml](.github/workflows/build.yml)); you can check which commit each
 release was built from on the Actions tab. The program is not code-signed,
 so Windows SmartScreen may warn the first time you run it.
+
+Each release also has a `.sha256` file with the installer's fingerprint.
+One-click updates (**Update now**) only download from this repository's
+releases and refuse to install a file whose fingerprint doesn't match.

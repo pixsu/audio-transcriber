@@ -6,6 +6,19 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-09
+
+### Added
+- **One-click updates:** the update notice now has **Update now**. It
+  downloads the new installer in the background (with progress), checks its
+  SHA-256 fingerprint, installs it silently and reopens the program on the
+  new version, with settings and models kept. It never interrupts a file:
+  the update waits until the current file is done, or click **Install now**.
+- Each release now includes the installer's `.sha256` fingerprint.
+
+### Note
+- Updating from 1.7.0 or older still works the old way one last time.
+
 ## [1.7.0] - 2026-11-09
 
 ### Added

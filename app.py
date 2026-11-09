@@ -479,6 +479,7 @@ def friendly_error(reason):
 # --- Update check -------------------------------------------------------------
 
 UPDATE_URL = "https://api.github.com/repos/pixsu/audio-transcriber/releases/latest"
+RELEASE_DOWNLOAD_PREFIX = "https://github.com/pixsu/audio-transcriber/releases/download/"
 UPDATE_CHECK_EVERY = 24 * 3600
 
 
@@ -513,12 +514,86 @@ def fetch_latest_release(url=UPDATE_URL):
                            "connection.") from None
     version = str(data.get("tag_name", "")).lstrip("vV")
     download = data.get("html_url", "")
-    for asset in data.get("assets", []):
+    setup = None
+    assets = data.get("assets", [])
+    for asset in assets:
         name = asset.get("name", "").lower()
         if "setup" in name and name.endswith(".exe"):
             download = asset.get("browser_download_url", download)
+            setup = asset
             break
-    return {"version": version, "page": data.get("html_url", ""), "download": download}
+    info = {"version": version, "page": data.get("html_url", ""), "download": download,
+            "setup_url": None, "setup_size": 0, "sha256": None}
+    # One-click updates need the installer from this repository and its
+    # SHA-256 fingerprint; without them the notice offers a normal download.
+    if setup and str(setup.get("browser_download_url", "")).startswith(RELEASE_DOWNLOAD_PREFIX):
+        sha = None
+        digest = str(setup.get("digest") or "")
+        if digest.startswith("sha256:"):
+            sha = digest[7:]
+        for asset in assets:
+            if asset.get("name", "").lower() == setup.get("name", "").lower() + ".sha256":
+                try:
+                    with urllib.request.urlopen(urllib.request.Request(
+                            asset["browser_download_url"],
+                            headers={"User-Agent": f"AudioTranscriber/{T.__version__}"}),
+                            timeout=15) as r:
+                        sha = r.read(4096).decode("ascii", "ignore").split()[0]
+                except (urllib.error.URLError, OSError, IndexError):
+                    pass
+        if sha and len(sha) == 64:
+            info.update(setup_url=setup["browser_download_url"],
+                        setup_size=int(setup.get("size") or 0), sha256=sha.lower())
+    return info
+
+
+def can_self_update():
+    """True when this copy was installed with the installer (not the zip or
+    the source code), so the update can be installed in place."""
+    return getattr(sys, "frozen", False) and any(T.APP_DIR.glob("unins*.exe"))
+
+
+def download_update(info, progress):
+    """Download the installer to a temp folder and check its fingerprint.
+    Returns the file's path. progress(fraction) is called while downloading."""
+    import hashlib
+    import tempfile
+    import urllib.request
+    folder = Path(tempfile.gettempdir()) / "AudioTranscriber-update"
+    folder.mkdir(exist_ok=True)
+    for old in folder.glob("*.exe"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    target = folder / f"AudioTranscriber-Setup-{info['version']}.exe"
+    sha = hashlib.sha256()
+    done = 0
+    request = urllib.request.Request(info["setup_url"], headers={
+        "User-Agent": f"AudioTranscriber/{T.__version__}"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as r, open(target, "wb") as f:
+            total = int(r.headers.get("Content-Length") or info["setup_size"] or 0)
+            while True:
+                chunk = r.read(256 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                sha.update(chunk)
+                done += len(chunk)
+                if total:
+                    progress(min(done / total, 1.0))
+    except OSError:
+        raise RuntimeError("The download stopped. Check the internet connection "
+                           "and try again.") from None
+    if sha.hexdigest() != info["sha256"]:
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        raise RuntimeError("The downloaded update didn't pass the safety check "
+                           "(its fingerprint doesn't match), so it wasn't installed.")
+    return target
 
 
 # --- File details (duration, format, ...) ----------------------------------
@@ -1049,9 +1124,10 @@ def build_app_class():
             ghost_button(self.banner, "What's new", lambda: self.open_url(
                 (self.update_info or {}).get("page")), width=96, height=30
                          ).pack(side="right", padx=4)
-            ctk.CTkButton(self.banner, text="Download", width=96, height=30,
-                          command=lambda: self.open_url((self.update_info or {}).get("download"))
-                          ).pack(side="right", padx=4)
+            self.update_btn = ctk.CTkButton(self.banner, text="Update now", width=110,
+                                            height=30, command=self.start_update)
+            self.update_btn.pack(side="right", padx=4)
+            self.update_state = None   # None, "downloading", "waiting", "installing"
 
         def _build_status_card(self, parent):
             card = ctk.CTkFrame(parent, corner_radius=12)
@@ -1633,14 +1709,101 @@ def build_app_class():
 
         def show_banner(self):
             info = self.update_info
+            if self.update_state:
+                return  # already updating
             self.banner_text.configure(
                 text=f"Version {info['version']} is available  "
                      f"(you have {T.__version__})")
+            one_click = bool(info.get("sha256")) and can_self_update()
+            self.update_btn.configure(text="Update now" if one_click else "Download", command=self.start_update,
+                                      state="normal")
             if not self.banner.winfo_ismapped():
                 self.banner.pack(fill="x", pady=(0, 12), before=self.status_card)
 
+        def start_update(self):
+            info = self.update_info or {}
+            if not (info.get("sha256") and can_self_update()):
+                self.open_url(info.get("download"))  # zip / source: download page
+                return
+            if self.update_state:
+                return
+            self.update_state = "downloading"
+            self.update_btn.configure(state="disabled", text="Downloading...")
+            self.banner_text.configure(text=f"Downloading version {info['version']}...")
+            log.info("Downloading update %s", info["version"])
+
+            def progress(fraction):
+                self.ui_calls.put(lambda: self.banner_text.configure(
+                    text=f"Downloading version {info['version']}...  {fraction:.0%}"))
+
+            def work():
+                try:
+                    path, error = download_update(info, progress), None
+                except Exception as e:
+                    path, error = None, str(e)
+                self.ui_calls.put(lambda: self.on_update_downloaded(path, error))
+            threading.Thread(target=work, name="update-download", daemon=True).start()
+
+        def on_update_downloaded(self, path, error):
+            if error:
+                log.warning("Update failed: %s", error)
+                self.update_state = None
+                self.show_banner()
+                self.update_btn.configure(text="Try again")
+                self.banner_text.configure(text=f"Update failed: {error}")
+                return
+            log.info("Update downloaded and verified: %s", path)
+            self.update_path = path
+            self.update_state = "waiting"
+            self.install_when_idle()
+
+        def install_when_idle(self):
+            """Never interrupt a file: wait until the current one is done."""
+            if self.quitting or self.update_state != "waiting":
+                return
+            busy = self.engine.snapshot()["file"]
+            if busy:
+                self.banner_text.configure(
+                    text=f"Update ready. It installs when {shorten(busy, 40)} is done.")
+                self.update_btn.configure(text="Install now", state="normal",
+                                          command=self.install_update_now)
+                self.after(2000, self.install_when_idle)
+                return
+            self.install_update_now()
+
+        def install_update_now(self):
+            busy = self.engine.snapshot()["file"]
+            if busy and not messagebox.askyesno(
+                    "Install the update now?",
+                    f"{busy} is still being transcribed. If you update now, it starts "
+                    "again from the beginning after the update.", icon="warning",
+                    parent=self):
+                return
+            self.update_state = "installing"
+            self.update_btn.configure(state="disabled", text="Installing...")
+            self.banner_text.configure(text="Installing the update. The program "
+                                            "reopens in a few seconds...")
+            self.update_idletasks()
+            log.info("Installing update from %s", self.update_path)
+            try:
+                # Detached, so the installer keeps running after we quit.
+                subprocess.Popen(
+                    [str(self.update_path), "/VERYSILENT", "/SUPPRESSMSGBOXES",
+                     "/NORESTART", "/RELAUNCH"],
+                    creationflags=0x00000008 | 0x00000200,  # DETACHED | NEW_GROUP
+                    close_fds=True)
+            except OSError as e:
+                self.update_state = None
+                self.show_banner()
+                self.banner_text.configure(text=f"Couldn't start the installer: {e}")
+                return
+            self.after(500, lambda: self.quit_app(force=True))
+
         def dismiss_update(self):
             """Hide the notice until an even newer version comes out."""
+            if self.update_state == "installing":
+                return
+            self.update_state = None
             if self.update_info:
                 try:
                     T.update_config({"dismissed_update": self.update_info["version"]})

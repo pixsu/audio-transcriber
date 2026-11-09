@@ -61,6 +61,9 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\AudioTranscriber.exe"; Description: "Start Audio Transcriber now"; Flags: nowait postinstall skipifsilent
+; One-click update from inside the program (silent install with /RELAUNCH):
+; reopen the program when done.
+Filename: "{app}\AudioTranscriber.exe"; Flags: nowait; Check: IsRelaunch
 
 [UninstallDelete]
 ; Settings, log and downloaded models live next to the .exe. Your Inbox and
@@ -81,6 +84,17 @@ var
 begin
   if CheckForMutexes(RunningMutex) and FileExists(Exe) then
     Exec(Exe, '--quit', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+function IsRelaunch(): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  if WizardSilent then
+    for I := 1 to ParamCount do
+      if CompareText(ParamStr(I), '/RELAUNCH') = 0 then
+        Result := True;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;

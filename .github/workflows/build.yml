@@ -103,6 +103,10 @@ jobs:
           $setup = "AudioTranscriber-Setup-$env:VERSION.exe"
           Copy-Item dist\AudioTranscriber.zip $zip
           Copy-Item dist\AudioTranscriber-Setup.exe $setup
+          # Fingerprint of the installer: the program checks it before a
+          # one-click update installs anything.
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Encoding ascii -NoNewline "$setup.sha256" "$hash  $setup"
           "ZIP=$zip" >> $env:GITHUB_ENV
           "SETUP=$setup" >> $env:GITHUB_ENV
 
@@ -135,4 +139,5 @@ jobs:
           body_path: release-notes.md
           files: |
             ${{ env.SETUP }}
+            ${{ env.SETUP }}.sha256
             ${{ env.ZIP }}
