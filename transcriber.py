@@ -34,7 +34,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.15.0"
+__version__ = "1.16.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -543,6 +543,17 @@ def is_hallucination(text: str) -> bool:
 
 
 HOLE_MIN_SECONDS = 6.0
+
+
+def merge_spans(spans):
+    """Sorted, non-overlapping version of a list of (start, end)."""
+    out = []
+    for a, b in sorted(spans):
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
 EMPTY_LABEL_SECONDS = 4.0  # shorter pauses between lines aren't labelled
 
 
@@ -625,18 +636,43 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
     # dead air is skipped and marked [SILENCE ...].
     use_vad = config["vad_filter"] and not config.get("label_music")
     source, music, gaps, clips = str(audio_path), None, [], "0"
-    if config.get("label_music"):
+    jingle_hits = {}  # (start, end) -> text, from the jingle library
+    library = []
+    try:
+        import jingles
+        library = jingles.load_library(config["output_folder"])
+    except Exception as e:
+        log.warning("   Jingle library couldn't be read (%s)", e)
+    if config.get("label_music") or library:
         import music_detect
         from faster_whisper.audio import decode_audio
         source = decode_audio(str(audio_path))  # decoded once, used for all steps
         duration = len(source) / music_detect.SAMPLE_RATE
-        music = find_music(source, hooks)
-        gaps = music_detect.find_silence(source)
-        if gaps:
-            silent = sum(b - a for a, b in gaps)
-            log.info("   Dead air: %d stretch(es), %s in total (skipped)",
-                     len(gaps), format_timestamp(silent))
-            clips = music_detect.sound_clips(gaps, duration)
+        skip = []
+        if config.get("label_music"):
+            music = find_music(source, hooks)
+            gaps = music_detect.find_silence(source)
+            if gaps:
+                silent = sum(b - a for a, b in gaps)
+                log.info("   Dead air: %d stretch(es), %s in total (skipped)",
+                         len(gaps), format_timestamp(silent))
+            skip += gaps
+        if library:
+            try:
+                for a, b, jingle in jingles.find_jingles(source, library, hooks.checkpoint):
+                    a, b = max(0.0, a), min(duration, b)
+                    if any(b > ga and a < gb for ga, gb in gaps):
+                        continue  # never over dead air
+                    jingle_hits[(a, b)] = jingle["text"] or jingle["name"]
+                    skip.append((a, b))
+                if jingle_hits:
+                    log.info("   Jingles recognised: %d (not transcribed)", len(jingle_hits))
+            except (Stopped, Skipped):
+                raise
+            except Exception as e:
+                log.warning("   Jingle matching didn't work (%s)", e)
+        if skip:
+            clips = music_detect.sound_clips(merge_spans(skip), duration)
 
     options = dict(
         language=config["language"],
@@ -673,7 +709,7 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
         segments, info = model.transcribe(source, clip_timestamps=clips, **options)
 
     if info is None:
-        log.info("   The whole file is silent.")
+        log.info("   Nothing left to transcribe (silence or recognised jingles).")
     elif config["language"] is None:
         log.info("   Detected language: %s (%.0f%% sure), audio length %s",
                  info.language, info.language_probability * 100,
@@ -768,9 +804,21 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
                 found.append((a, b, music_detect.describe_empty(music, a, b)))
             found.sort(key=lambda f: f[0])
 
+    for a, b in jingle_hits:
+        found.append((a, b, None))
+    found.sort(key=lambda f: f[0])
+
     for start, end, text in found:
         add_gaps(start)
         seg_start, seg_end = start, end
+        if text is None:  # a recognised jingle: the library's text, as written
+            jingle_text = " ".join(jingle_hits[(start, end)].split())
+            if config["include_timestamps"]:
+                lines.append(f"[JINGLE {format_timestamp(start)} → "
+                             f"{format_timestamp(end)}] {jingle_text}")
+            else:
+                lines.append(f"[JINGLE] {jingle_text}")
+            continue
         tag = "MUSIC " if music is not None and (
             text == "(instrumental)" or music_detect.is_music(music, seg_start, seg_end)) else ""
         if config["include_timestamps"]:

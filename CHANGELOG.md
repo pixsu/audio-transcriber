@@ -6,6 +6,18 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-11-10
+
+### Added
+- **Jingle library.** Jingles, station IDs and ads are the same recording
+  every time they air. Correct one once (transcript window: select its
+  lines, right-click → **Save as jingle / ad**, type the correct text) and
+  it's recognised by its sound in every new file and written exactly as
+  saved: `[JINGLE 00:00:45 → 00:01:23] Tuloy ang ligaya! …`. Recognised
+  stretches aren't transcribed, which also saves time. Shared by PCs using
+  the same Transcripts folder; see and delete them in **Settings →
+  Vocabulary → Jingles and ads**.
+
 ## [1.15.0] - 2026-11-10
 
 ### Added

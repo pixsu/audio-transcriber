@@ -275,6 +275,7 @@ only in `config.json`; restart the program after editing it by hand.
 | `language` | `auto` | `auto` detects the language. Or force one with a code, e.g. `en` (English) or `tl` (Tagalog). |
 | `include_timestamps` | `false` | `true` writes lines like `[00:01:23 → 00:01:30] text here`. |
 | `word_list` | `[]` | Names to spell right (stations, hosts, sponsors, places), given to Whisper as hints. Edit in **Settings → Vocabulary**. Keep it to real names: common words in the list can be wrongly inserted. |
+| Jingle library | — | Station jingles, IDs and ads are the same recording every time. Correct one once: open a transcript, select its lines, right-click → **Save as jingle / ad**, type the correct text. From then on it's recognised in every new file (`[JINGLE 00:00:45 → 00:01:23] your text`) and not transcribed. Stored in `.jingles` inside the Transcripts folder, so PCs sharing that folder share the library. Manage in **Settings → Vocabulary → Jingles and ads**. |
 | `replacements` | `{}` | Fixes applied to every line, e.g. `{"Love rate": "Love Radio"}`. Whole words, any capitals. Edit in **Settings → Vocabulary**. |
 | `label_music` | `false` | `true` puts `MUSIC` in front of lines where music or singing dominates (songs, jingles), e.g. `[MUSIC 00:01:23 → 00:01:30] lyrics`, or `[MUSIC] lyrics` without timestamps. Everything is still transcribed; talk over a music bed stays unlabelled. With this on, **Skip silence** is not used (it drops singing); instead only true dead air (no sound for 10 seconds or more) is skipped and marked, e.g. `[SILENCE 00:52:40 → 01:00:30]`. Uses a small sound classifier (YAMNet, 14 MB, downloaded once into `models\yamnet`) and adds only a few seconds per hour of audio. |
 | `vad_filter` | `true` | Skips silence. Good for speech; **set to `false` for music** (see below). |
@@ -453,6 +454,7 @@ next to the scripts.
 app.py                  The window, tray icon and settings panel
 transcriber.py          The transcription engine (also runs on its own in a console)
 music_detect.py         Finds music parts for the "Label music and songs" setting
+jingles.py              Jingle library: recognises jingles and ads that air again and again
 requirements.txt        Top-level Python dependencies (loose versions)
 requirements-lock.txt   Exact tested versions, used by build.bat
 build.bat               One-click build script (venv + install + PyInstaller + installer)

@@ -20,6 +20,7 @@ import ctypes
 import logging
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -1485,7 +1486,15 @@ def build_app_class():
             self.vocab_summary = ctk.CTkLabel(card, text="", anchor="w", justify="left",
                                               text_color=GRAY, font=font(11), wraplength=290)
             self.vocab_summary.grid(row=1, column=0, columnspan=2, sticky="w", padx=12,
-                                    pady=(0, 10))
+                                    pady=(0, 4))
+            ctk.CTkLabel(card, text="Jingles and ads", anchor="w", font=font(12, "bold")
+                         ).grid(row=2, column=0, sticky="w", padx=12, pady=(10, 0))
+            ghost_button(card, "Manage...", self.manage_jingles, width=80
+                         ).grid(row=2, column=1, sticky="e", padx=12, pady=(10, 0))
+            self.jingle_summary = ctk.CTkLabel(card, text="", anchor="w", justify="left",
+                                               text_color=GRAY, font=font(11), wraplength=290)
+            self.jingle_summary.grid(row=3, column=0, columnspan=2, sticky="w", padx=12,
+                                     pady=(0, 10))
             self.refresh_vocab_summary()
 
             card = self._section(panel, "Folders")
@@ -2074,6 +2083,10 @@ def build_app_class():
                 else:
                     menu.add_command(label="Select a word first", state="disabled")
                 menu.add_separator()
+                menu.add_command(label="Save as jingle / ad...",
+                                 command=lambda: self.save_as_jingle(win, path, tk_text, status,
+                                                                     reload))
+                menu.add_separator()
                 menu.add_command(label="Copy", command=lambda: tk_text.event_generate("<<Copy>>"))
                 menu.tk_popup(event.x_root, event.y_root)
 
@@ -2084,6 +2097,181 @@ def build_app_class():
             win.protocol("WM_DELETE_WINDOW", close_window)
             win.after(100, win.focus_force)
             win._start_edit, win._save_edit, win._text = start_edit, save_edit, tk_text  # tests
+
+        # ------------------------------------------------------------- jingles
+        TIME_RE = re.compile(r"\[(?:[A-Z]+ )?(\d\d:\d\d:\d\d) → (\d\d:\d\d:\d\d)\]")
+
+        @staticmethod
+        def _seconds(stamp):
+            h, m, sec = (int(x) for x in stamp.split(":"))
+            return h * 3600 + m * 60 + sec
+
+        def save_as_jingle(self, parent, path, tk_text, status, reload):
+            """Selected lines -> a jingle: name, correct text, start/end."""
+            try:
+                first = tk_text.index("sel.first linestart")
+                last = tk_text.index("sel.last lineend")
+                selected = tk_text.get(first, last)
+            except Exception:
+                selected = ""
+            lines = [l for l in selected.splitlines() if l.strip()]
+            stamps = [m for l in lines if (m := self.TIME_RE.match(l))]
+            if not stamps:
+                messagebox.showinfo(
+                    "Save as jingle",
+                    "Select the jingle's lines first (they need timestamps: turn on "
+                    "Add timestamps in Settings), then right-click → Save as jingle.",
+                    parent=parent)
+                return
+            source = self.source_of.get(path.name.lower()) or self.guess_source(path)
+            audio_path = (self.engine.inbox / source) if (source and self.engine.inbox) else None
+            if not audio_path or not audio_path.exists():
+                messagebox.showerror(
+                    "Save as jingle",
+                    "The original recording for this transcript isn't in the Inbox any "
+                    "more, so its sound can't be saved.", parent=parent)
+                return
+            text = " ".join(l.split("] ", 1)[-1] if l.startswith("[") else l for l in lines)
+
+            dlg = ctk.CTkToplevel(parent)
+            dlg.title("Save as jingle / ad")
+            dlg.geometry("520x430")
+            dlg.transient(parent)
+            dlg.after(100, dlg.grab_set)
+            dlg.grid_columnconfigure((0, 1), weight=1)
+            ctk.CTkLabel(dlg, text="Name", font=font(12, "bold"), anchor="w"
+                         ).grid(row=0, column=0, columnspan=2, sticky="w", padx=18, pady=(14, 2))
+            name = ctk.CTkEntry(dlg, placeholder_text="e.g. Love Radio – Tuloy ang ligaya")
+            name.grid(row=1, column=0, columnspan=2, sticky="ew", padx=18)
+            ctk.CTkLabel(dlg, text="Starts at", font=font(12, "bold"), anchor="w"
+                         ).grid(row=2, column=0, sticky="w", padx=(18, 6), pady=(10, 2))
+            ctk.CTkLabel(dlg, text="Ends at", font=font(12, "bold"), anchor="w"
+                         ).grid(row=2, column=1, sticky="w", padx=(6, 18), pady=(10, 2))
+            start_e = ctk.CTkEntry(dlg)
+            start_e.insert(0, stamps[0].group(1))
+            start_e.grid(row=3, column=0, sticky="ew", padx=(18, 6))
+            end_e = ctk.CTkEntry(dlg)
+            end_e.insert(0, stamps[-1].group(2))
+            end_e.grid(row=3, column=1, sticky="ew", padx=(6, 18))
+            ctk.CTkLabel(dlg, text="Correct text (written every time it plays)",
+                         font=font(12, "bold"), anchor="w"
+                         ).grid(row=4, column=0, columnspan=2, sticky="w", padx=18, pady=(10, 2))
+            text_box = ctk.CTkTextbox(dlg, height=150, wrap="word")
+            text_box.insert("1.0", text)
+            text_box.grid(row=5, column=0, columnspan=2, sticky="nsew", padx=18)
+            dlg.grid_rowconfigure(5, weight=1)
+            bar = ctk.CTkFrame(dlg, fg_color="transparent")
+            bar.grid(row=6, column=0, columnspan=2, sticky="e", padx=18, pady=14)
+
+            def save():
+                try:
+                    a = self._seconds(start_e.get().strip())
+                    b = self._seconds(end_e.get().strip())
+                except ValueError:
+                    messagebox.showwarning("Save as jingle", "Times must look like 00:01:23.",
+                                           parent=dlg)
+                    return
+                label = name.get().strip() or "Jingle"
+                correct = " ".join(text_box.get("1.0", "end").split())
+                if not correct:
+                    messagebox.showwarning("Save as jingle", "Type the correct text first.",
+                                           parent=dlg)
+                    return
+                dlg.configure(cursor="watch")
+                dlg.update()
+                try:
+                    import jingles
+                    from faster_whisper.audio import decode_audio
+                    audio = decode_audio(str(audio_path))
+                    jingles.save_jingle(self.output_dir(), label, correct, audio, a, b)
+                except Exception as e:
+                    dlg.configure(cursor="")
+                    messagebox.showerror("Save as jingle", str(e), parent=dlg)
+                    return
+                log.info('Jingle saved: "%s" (%s, %d s)', label, audio_path.name, b - a)
+                dlg.destroy()
+                self.refresh_vocab_summary()
+                # Show it in this transcript straight away.
+                if messagebox.askyesno(
+                        "Jingle saved",
+                        f'"{label}" will be recognised in every new file.\n\n'
+                        "Replace the selected lines in this transcript with it now?",
+                        parent=parent):
+                    self.replace_with_jingle(path, a, b, correct)
+                    reload(highlight=correct[:30])
+                status.configure(text=f'Jingle "{label}" saved')
+
+            ghost_button(bar, "Cancel", dlg.destroy, width=80, height=30).pack(side="right")
+            ctk.CTkButton(bar, text="Save jingle", width=110, height=30, command=save
+                          ).pack(side="right", padx=(0, 8))
+            dlg.bind("<Escape>", lambda e: dlg.destroy())
+
+        def replace_with_jingle(self, path, a, b, text):
+            with open(path, encoding="utf-8") as f:
+                old = f.read().split("\n")
+            new, placed = [], False
+            line = f"[JINGLE {T.format_timestamp(a)} → {T.format_timestamp(b)}] {text}"
+            for l in old:
+                m = self.TIME_RE.match(l)
+                inside = m and a <= self._seconds(m.group(1)) < b and not l.startswith("[SILENCE")
+                if inside:
+                    if not placed:
+                        new.append(line)
+                        placed = True
+                    continue
+                if not placed and m and self._seconds(m.group(1)) >= b:
+                    new.append(line)
+                    placed = True
+                new.append(l)
+            if not placed:
+                new.append(line)
+            tmp = path.with_name(path.name + f".{T.HOSTNAME}.jingle")
+            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+                f.write("\n".join(new))
+            os.replace(tmp, path)
+
+        def manage_jingles(self):
+            import jingles
+            win = ctk.CTkToplevel(self)
+            win.title("Jingles and ads")
+            win.geometry("620x480")
+            win.transient(self)
+            ctk.CTkLabel(win, text="Saved jingles and ads", font=font(14, "bold"), anchor="w"
+                         ).pack(fill="x", padx=18, pady=(14, 0))
+            ctk.CTkLabel(win, text="Shared by every PC that uses this Transcripts folder. "
+                                   "To add one: open a transcript, select the jingle's lines, "
+                                   "right-click → Save as jingle.",
+                         text_color=GRAY, font=font(11), anchor="w", justify="left",
+                         wraplength=580).pack(fill="x", padx=18, pady=(0, 8))
+            body = ctk.CTkScrollableFrame(win)
+            body.pack(fill="both", expand=True, padx=18, pady=(0, 14))
+
+            def fill():
+                for w in body.winfo_children():
+                    w.destroy()
+                items = jingles.load_library(self.output_dir())
+                if not items:
+                    ctk.CTkLabel(body, text="None saved yet.", text_color=GRAY).pack(pady=20)
+                for j in items:
+                    row = ctk.CTkFrame(body, corner_radius=8)
+                    row.pack(fill="x", pady=4)
+                    info = ctk.CTkFrame(row, fg_color="transparent")
+                    info.pack(side="left", fill="x", expand=True, padx=12, pady=8)
+                    ctk.CTkLabel(info, text=f"{j['name']}  ·  {j.get('seconds', 0):.0f} s",
+                                 font=font(12, "bold"), anchor="w").pack(fill="x")
+                    ctk.CTkLabel(info, text=shorten(j.get("text", ""), 90), text_color=GRAY,
+                                 font=font(11), anchor="w").pack(fill="x")
+
+                    def remove(jid=j["id"], label=j["name"]):
+                        if messagebox.askyesno("Delete jingle",
+                                               f'Delete "{label}"? It won\'t be recognised '
+                                               "in new files any more.", parent=win):
+                            jingles.delete_jingle(self.output_dir(), jid)
+                            fill()
+                            self.refresh_vocab_summary()
+                    ghost_button(row, "Delete", remove, width=70).pack(side="right", padx=12)
+            fill()
+            win.bind("<Escape>", lambda e: win.destroy())
 
         def ask_correction(self, parent, path, wrong, status, reload):
             """'Correct "Tuyoy" to: [Tuloy]', only here or always."""
@@ -2184,6 +2372,16 @@ def build_app_class():
                 text = (f"{len(words)} name{'s' if len(words) != 1 else ''}  ·  "
                         f"{len(fixes)} fix{'es' if len(fixes) != 1 else ''}")
             self.vocab_summary.configure(text=text)
+            try:
+                import jingles
+                count = len(jingles.load_library(self.output_dir()))
+            except Exception:
+                count = 0
+            self.jingle_summary.configure(
+                text=(f"{count} saved. Recognised in every new file and written exactly as "
+                      "saved." if count else
+                      "Correct a jingle or ad once (transcript window: select its lines, "
+                      "right-click → Save as jingle) and it's recognised from then on."))
 
         def edit_vocabulary(self):
             """A window with two lists: names to spell right, and fixes."""

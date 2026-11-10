@@ -17,6 +17,7 @@ on:
     paths:
       - transcriber.py
       - music_detect.py
+      - jingles.py
       - app.py
       - installer.iss
       - requirements-lock.txt
