@@ -29,7 +29,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.11.0"
+__version__ = "1.12.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -462,12 +462,34 @@ def make_replacer(replacements: dict):
     if not replacements:
         return lambda text: text
     # Longest first, so "Love Radio Naga" wins over "Love Radio".
-    rules = [(re.compile(r"(?<!\w)" + re.escape(wrong) + r"(?!\w)", re.IGNORECASE), right)
+    def style(word):
+        if word.isupper():
+            return "upper"
+        if word[:1].isupper() and word[1:] == word[1:].lower():
+            return "title"
+        return "lower" if word.islower() else "mixed"
+
+    def matched_case(found, wrong, right):
+        # "Tuyoy = Tuloy" (same capitals on both sides) is an ordinary word:
+        # follow the transcript, so "tuyoy" -> "tuloy", "TUYOY" -> "TULOY".
+        # Anything else ("Love rate = Love Radio") is written exactly as typed.
+        if style(wrong) != style(right) or style(right) == "mixed":
+            return right
+        kind = style(found)
+        if kind == "upper":
+            return right.upper()
+        if kind == "lower":
+            return right.lower()
+        if kind == "title":
+            return right[:1].upper() + right[1:].lower()
+        return right
+
+    rules = [(re.compile(r"(?<!\w)" + re.escape(wrong) + r"(?!\w)", re.IGNORECASE), wrong, right)
              for wrong, right in sorted(replacements.items(), key=lambda kv: -len(kv[0]))]
 
     def apply(text):
-        for pattern, right in rules:
-            text = pattern.sub(lambda m: right, text)
+        for pattern, wrong, right in rules:
+            text = pattern.sub(lambda m: matched_case(m.group(0), wrong, right), text)
         return text
     return apply
 

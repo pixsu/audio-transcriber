@@ -404,6 +404,40 @@ def save_ico(path):
                                            (48, 48), (64, 64), (256, 256)])
 
 
+def fix_line(line, fix):
+    """Apply a text fix to one transcript line, leaving its [MUSIC 00:00:00 →
+    ...] / [SILENCE ...] label untouched."""
+    if line.startswith("[") and "] " in line:
+        label, text = line.split("] ", 1)
+        return f"{label}] {fix(text)}"
+    if line.startswith("[SILENCE"):
+        return line
+    return fix(line)
+
+
+def fix_transcript_file(path, fix):
+    """Rewrite a transcript with a fix applied. Returns how many lines changed."""
+    with open(path, encoding="utf-8") as f:
+        lines = f.read().split("\n")
+    new = [fix_line(l, fix) for l in lines]
+    changed = sum(1 for a, b in zip(lines, new) if a != b)
+    if changed:
+        tmp = Path(path).with_name(Path(path).name + f".{T.HOSTNAME}.fix")
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(new))
+        os.replace(tmp, path)
+    return changed
+
+
+def count_in_transcript(path, fix):
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().split("\n")
+    except OSError:
+        return 0
+    return sum(1 for l in lines if fix_line(l, fix) != l)
+
+
 def open_path(path):
     try:
         os.startfile(str(path))
@@ -1872,6 +1906,185 @@ def build_app_class():
             self.banner_sub.configure(text=detail)
 
         # ---------------------------------------------------------- vocabulary
+        # ------------------------------------------------------ transcript review
+        def review_transcript(self, path):
+            """Show a transcript; select a wrong word, right-click, correct it."""
+            path = Path(path)
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError as e:
+                messagebox.showerror("Open transcript", f"Couldn't open:\n{e}", parent=self)
+                return
+            win = ctk.CTkToplevel(self)
+            win.title(path.name)
+            win.geometry("860x640")
+            win.transient(self)
+            win.grid_columnconfigure(0, weight=1)
+            win.grid_rowconfigure(1, weight=1)
+
+            top = ctk.CTkFrame(win, fg_color="transparent")
+            top.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 6))
+            ctk.CTkLabel(top, text="Spotted a wrong word? Select it (or double-click it), "
+                                   "then right-click → Correct.",
+                         text_color=GRAY, font=font(12), anchor="w").pack(side="left")
+            ghost_button(top, "Show in folder", lambda: show_in_folder(path), width=104
+                         ).pack(side="right")
+            ghost_button(top, "Open in Notepad", lambda: open_path(path), width=116
+                         ).pack(side="right", padx=8)
+
+            box = ctk.CTkTextbox(win, font=ctk.CTkFont(family="Consolas", size=13), wrap="word")
+            box.grid(row=1, column=0, sticky="nsew", padx=16)
+            box.insert("1.0", text)
+            box.configure(state="disabled")  # read-only; selecting still works
+            tk_text = box._textbox
+            tk_text.tag_configure("fixed", background="#2e6b3f")
+
+            status = ctk.CTkLabel(win, text="", text_color=GRAY, font=font(11), anchor="w")
+            status.grid(row=2, column=0, sticky="ew", padx=16, pady=(6, 12))
+
+            def selected_word(event=None):
+                try:
+                    return tk_text.get("sel.first", "sel.last").strip()
+                except Exception:
+                    pass
+                if event is None:
+                    return ""
+                at = f"@{event.x},{event.y}"
+                start, end = tk_text.index(f"{at} wordstart"), tk_text.index(f"{at} wordend")
+                tk_text.tag_add("sel", start, end)
+                return tk_text.get(start, end).strip()
+
+            def reload(highlight=None):
+                new_text = path.read_text(encoding="utf-8")
+                y = tk_text.yview()[0]
+                box.configure(state="normal")
+                box.delete("1.0", "end")
+                box.insert("1.0", new_text)
+                if highlight:
+                    start = "1.0"
+                    while True:
+                        pos = tk_text.search(highlight, start, stopindex="end", nocase=True)
+                        if not pos:
+                            break
+                        end = f"{pos}+{len(highlight)}c"
+                        tk_text.tag_add("fixed", pos, end)
+                        start = end
+                box.configure(state="disabled")
+                tk_text.yview_moveto(y)
+
+            def correct(event=None):
+                wrong = selected_word(event)
+                if not wrong or len(wrong) > 60 or "\n" in wrong:
+                    status.configure(text="Select a word or a few words first.")
+                    return
+                self.ask_correction(win, path, wrong, status, reload)
+
+            menu = tk.Menu(win, tearoff=0)
+
+            def popup(event):
+                word = selected_word(event)
+                menu.delete(0, "end")
+                if word and len(word) <= 60 and "\n" not in word:
+                    menu.add_command(label=f'Correct "{shorten(word, 30)}"...',
+                                     command=lambda: self.ask_correction(
+                                         win, path, word, status, reload))
+                else:
+                    menu.add_command(label="Select a word first", state="disabled")
+                menu.add_separator()
+                menu.add_command(label="Copy", command=lambda: tk_text.event_generate("<<Copy>>"))
+                menu.tk_popup(event.x_root, event.y_root)
+
+            tk_text.bind("<Button-3>", popup)
+            win.bind("<Control-e>", correct)
+            win.bind("<Escape>", lambda e: win.destroy())
+            win.after(100, win.focus_force)
+
+        def ask_correction(self, parent, path, wrong, status, reload):
+            """'Correct "Tuyoy" to: [Tuloy]', only here or always."""
+            dlg = ctk.CTkToplevel(parent)
+            dlg.title("Correct")
+            dlg.geometry("440x250")
+            dlg.resizable(False, False)
+            dlg.transient(parent)
+            dlg.after(100, dlg.grab_set)
+            ctk.CTkLabel(dlg, text=f'Correct "{shorten(wrong, 40)}" to:', font=font(13, "bold"),
+                         anchor="w").pack(fill="x", padx=18, pady=(16, 6))
+            entry = ctk.CTkEntry(dlg, height=34)
+            entry.insert(0, wrong)
+            entry.pack(fill="x", padx=18)
+            entry.after(150, lambda: (entry.focus_set(), entry.select_range(0, "end")))
+            scope = ctk.StringVar(value="always")
+            ctk.CTkRadioButton(dlg, text="Always (this and future transcripts)", variable=scope,
+                               value="always").pack(anchor="w", padx=18, pady=(14, 4))
+            ctk.CTkRadioButton(dlg, text="Only in this transcript", variable=scope,
+                               value="here").pack(anchor="w", padx=18)
+            bar = ctk.CTkFrame(dlg, fg_color="transparent")
+            bar.pack(fill="x", padx=18, pady=16, side="bottom")
+
+            def ok(event=None):
+                right = entry.get().strip()
+                if not right or right == wrong:
+                    dlg.destroy()
+                    return
+                always = scope.get() == "always"
+                dlg.destroy()
+                self.apply_correction(parent, path, wrong, right, always, status, reload)
+
+            ghost_button(bar, "Cancel", dlg.destroy, width=80, height=30).pack(side="right")
+            ctk.CTkButton(bar, text="Correct", width=90, height=30, command=ok
+                          ).pack(side="right", padx=(0, 8))
+            dlg.bind("<Return>", ok)
+            dlg.bind("<Escape>", lambda e: dlg.destroy())
+
+        def apply_correction(self, parent, path, wrong, right, always, status, reload):
+            fix = T.make_replacer({wrong: right})
+            try:
+                here = fix_transcript_file(path, fix)
+            except OSError as e:
+                messagebox.showerror("Correct", f"Couldn't save the transcript:\n{e}",
+                                     parent=parent)
+                return
+            parts = [f'"{wrong}" → "{right}": {here} line{"s" if here != 1 else ""} fixed here']
+            if always:
+                try:
+                    raw = self.config_raw()
+                    fixes = dict(raw.get("replacements") or {})
+                    fixes[wrong] = right
+                    T.update_config({"replacements": fixes})
+                    self.engine.settings_changed()
+                    self.refresh_vocab_summary()
+                    parts.append("added to Fixes for future transcripts")
+                    log.info('Fix added: "%s" -> "%s"', wrong, right)
+                except Exception as e:
+                    messagebox.showerror("Correct", f"Couldn't save the fix:\n{e}", parent=parent)
+                # Older transcripts with the same mistake.
+                others = []
+                try:
+                    for other in self.output_dir().glob("*.txt"):
+                        if other != path and not other.name.startswith("."):
+                            n = count_in_transcript(other, fix)
+                            if n:
+                                others.append((other, n))
+                except OSError:
+                    pass
+                if others:
+                    lines = sum(n for _, n in others)
+                    if messagebox.askyesno(
+                            "Fix older transcripts too?",
+                            f'"{wrong}" also appears in {len(others)} other transcript'
+                            f'{"s" if len(others) != 1 else ""} ({lines} line'
+                            f'{"s" if lines != 1 else ""}).\n\nCorrect those too?',
+                            parent=parent):
+                        done = 0
+                        for other, _ in others:
+                            try:
+                                done += 1 if fix_transcript_file(other, fix) else 0
+                            except OSError:
+                                pass
+                        parts.append(f"{done} other transcript{'s' if done != 1 else ''} fixed")
+            status.configure(text="  ·  ".join(parts))
+            reload(highlight=right)
+
         def refresh_vocab_summary(self):
             c = self.config_raw()
             words = c.get("word_list") or []
@@ -2428,7 +2641,8 @@ def build_app_class():
                 ghost_button(row, "Show in folder", lambda p=path: show_in_folder(p), width=104
                              ).pack(side="right", padx=(4, 10))
                 ctk.CTkButton(row, text="Open", width=60, height=26,
-                              command=lambda p=path: open_path(p)).pack(side="right", padx=4)
+                              command=lambda p=path: self.review_transcript(p)
+                              ).pack(side="right", padx=4)
 
         def _build_issue_rows(self, frame, issues):
             if not issues:

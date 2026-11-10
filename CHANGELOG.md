@@ -6,6 +6,21 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-11-10
+
+### Added
+- **Correct words while reading.** **Open** in the Completed tab now shows
+  the transcript inside the app. Select a wrong word (or double-click it),
+  right-click → **Correct**, type the right spelling and choose **Always**:
+  the transcript is fixed, the fix is added to Vocabulary for future
+  transcripts, and older transcripts with the same mistake can be fixed too.
+  **Open in Notepad** is still there.
+
+### Changed
+- Fixes follow the transcript's capitals when written in normal capitals
+  (`Tuyoy = Tuloy` turns "tuyoy" into "tuloy"). Names with special capitals
+  (`Love rate = Love Radio`) are still written exactly as typed.
+
 ## [1.11.0] - 2026-11-10
 
 ### Added
