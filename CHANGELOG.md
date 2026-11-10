@@ -6,6 +6,13 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.10.4] - 2026-11-10
+
+### Fixed
+- With **Label music and songs** on, Whisper no longer randomly drops whole
+  30-second stretches it thinks have "no speech" (e.g. chanted jingles).
+  Real silence is still skipped by the dead-air check.
+
 ## [1.10.3] - 2026-11-10
 
 ### Fixed

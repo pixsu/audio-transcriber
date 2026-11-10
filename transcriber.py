@@ -29,7 +29,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.10.3"
+__version__ = "1.10.4"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -528,6 +528,11 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
             # On radio recordings that made Whisper get stuck repeating a
             # lyric and then write nothing for minutes of clear speech.
             condition_on_previous_text=False,
+            # Whisper drops a whole 30-second chunk when it "sounds like no
+            # speech", which randomly hit chanted jingles and talk over music.
+            # With music labels on, real silence is already found and skipped
+            # by the dead-air check, so keep everything else.
+            no_speech_threshold=None if config.get("label_music") else 0.6,
         )
 
     if info is None:
