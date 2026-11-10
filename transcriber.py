@@ -29,7 +29,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.10.4"
+__version__ = "1.11.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -157,6 +157,12 @@ DEFAULT_CONFIG = {
     # Put [MUSIC] in front of lines where music or singing dominates (songs,
     # jingles). Everything is still transcribed.
     "label_music": False,
+    # Names and words to spell correctly (stations, hosts, sponsors, places).
+    # Given to Whisper as hints.
+    "word_list": [],
+    # Fixes applied to every transcript line: {"wrong": "right"}. Whole
+    # words, any capitalisation.
+    "replacements": {},
     # Skip silence. Good for speech recordings, but it also throws away
     # singing over music - set to false for songs.
     "vad_filter": True,
@@ -180,7 +186,7 @@ DEFAULT_CONFIG = {
     "check_for_updates": True,
 }
 
-VALID_MODELS = {"tiny", "base", "small", "medium", "large-v3"}
+VALID_MODELS = {"tiny", "base", "small", "medium", "large-v3-turbo", "large-v3"}
 # speed setting -> beam size (how many candidate wordings Whisper compares)
 SPEED_BEAM_SIZE = {"fast": 1, "accurate": 5}
 VALID_ORDERS = {"newest_first", "oldest_first", "name"}
@@ -260,6 +266,15 @@ def load_config() -> dict:
     config["include_timestamps"] = bool(config["include_timestamps"])
     config["vad_filter"] = bool(config["vad_filter"])
     config["label_music"] = bool(config.get("label_music"))
+    words = config.get("word_list") or []
+    if isinstance(words, str):
+        words = words.replace("\n", ",").split(",")
+    config["word_list"] = [str(w).strip() for w in words if str(w).strip()]
+    repl = config.get("replacements") or {}
+    if not isinstance(repl, dict):
+        repl = {}
+    config["replacements"] = {str(k).strip(): str(v).strip() for k, v in repl.items()
+                              if str(k).strip()}
     config["use_filename_hint"] = bool(config["use_filename_hint"])
     # Normalise to lowercase ".ext" so "MP4" or "mp4" both work.
     config["file_types"] = {
@@ -430,6 +445,44 @@ HALLUCINATIONS = {
 }
 
 
+def build_hotwords(hint, words):
+    """File-name hint plus the word list, kept short (Whisper only reads
+    about 220 tokens of hints)."""
+    parts = ([hint] if hint else []) + list(words)
+    text = ""
+    for part in parts:
+        if len(text) + len(part) + 2 > 400:
+            break
+        text = f"{text}, {part}" if text else part
+    return text or None
+
+
+def make_replacer(replacements: dict):
+    """A function that applies the find-and-replace list to one line."""
+    if not replacements:
+        return lambda text: text
+    # Longest first, so "Love Radio Naga" wins over "Love Radio".
+    rules = [(re.compile(r"(?<!\w)" + re.escape(wrong) + r"(?!\w)", re.IGNORECASE), right)
+             for wrong, right in sorted(replacements.items(), key=lambda kv: -len(kv[0]))]
+
+    def apply(text):
+        for pattern, right in rules:
+            text = pattern.sub(lambda m: right, text)
+        return text
+    return apply
+
+
+# Languages written in the Latin alphabet. When one of these is chosen,
+# Whisper's occasional stray Korean / Chinese / Russian letters (invented
+# during music) are removed.
+LATIN_LANGUAGES = {"tl", "en", "es", "id", "ms"}
+
+
+def strip_foreign_script(text: str) -> str:
+    kept = "".join(ch for ch in text if not (ch.isalpha() and ord(ch) > 0x24F))
+    return " ".join(kept.split())
+
+
 def is_hallucination(text: str) -> bool:
     norm = " ".join(re.sub(r"[^\w\s]", "", text.lower()).split())
     return norm in HALLUCINATIONS or norm.startswith("subtitles by") or "amara org" in norm
@@ -519,7 +572,7 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
             clip_timestamps=clips,
             language=config["language"],
             vad_filter=use_vad,  # skip silence
-            hotwords=hint,
+            hotwords=build_hotwords(hint, config.get("word_list", [])),
             beam_size=SPEED_BEAM_SIZE[config["speed"]],
             # Check several 30s chunks when detecting the language, not just the
             # first one (song intros are often instrumental).
@@ -551,6 +604,8 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
                     format_timestamp(kept), format_timestamp(info.duration))
 
     lines = []
+    fix_words = make_replacer(config.get("replacements", {}))
+    latin_only = config["language"] in LATIN_LANGUAGES
     pending_gaps = list(gaps)
 
     def add_gaps(before):
@@ -564,7 +619,9 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
         hooks.checkpoint()  # pausing here simply holds the work until resumed
         if info.duration:
             hooks.progress(audio_path, min(100.0, seg.end / info.duration * 100))
-        text = seg.text.strip()
+        text = fix_words(seg.text.strip())
+        if latin_only:
+            text = strip_foreign_script(text)
         if not text or is_hallucination(text):
             continue
         add_gaps(seg.start)

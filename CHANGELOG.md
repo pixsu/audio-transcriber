@@ -6,6 +6,19 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-11-10
+
+### Added
+- **Vocabulary** (Settings → Vocabulary → Edit): a list of names to spell
+  right (stations, hosts, sponsors, places), given to Whisper as hints, and
+  a list of fixes (`Love rate = Love Radio`) applied to every line.
+- **Turbo** quality (`large-v3-turbo`, 1.6 GB): more accurate than Medium on
+  radio recordings (names, ads and lyrics) for about 30% more time.
+
+### Fixed
+- Stray Korean, Chinese or Russian letters that Whisper sometimes invents
+  during music are removed when the language is Filipino/Tagalog or English.
+
 ## [1.10.4] - 2026-11-10
 
 ### Fixed

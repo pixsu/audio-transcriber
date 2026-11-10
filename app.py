@@ -40,6 +40,7 @@ MODEL_CHOICES = {
     "Base (fast, basic)": "base",
     "Small (fast, good)": "small",
     "Medium (recommended)": "medium",
+    "Turbo (more accurate, a bit slower)": "large-v3-turbo",
     "Large (best, slowest)": "large-v3",
 }
 LANGUAGE_CHOICES = {
@@ -78,11 +79,13 @@ SETTING_NAMES = {
 # confirmed in a dialog before they're applied.
 IMPORTANT_SETTINGS = ("model_size", "device", "input_folder", "output_folder", "_autostart")
 MODEL_DOWNLOAD = {"tiny": "75 MB", "base": "145 MB", "small": "480 MB",
-                  "medium": "1.5 GB", "large-v3": "3 GB"}
+                  "medium": "1.5 GB", "large-v3-turbo": "1.6 GB", "large-v3": "3 GB"}
 
 
 def model_downloaded(size):
-    return (T.MODELS_DIR / f"models--Systran--faster-whisper-{size}").is_dir()
+    # Most models come from Systran; Turbo from Mobius Labs.
+    return any((T.MODELS_DIR / f"models--{owner}--faster-whisper-{size}").is_dir()
+               for owner in ("Systran", "mobiuslabsgmbh"))
 
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -1440,6 +1443,17 @@ def build_app_class():
             }
             ctk.CTkFrame(card, height=10, fg_color="transparent").grid(row=8, column=0)
 
+            card = self._section(panel, "Vocabulary")
+            ctk.CTkLabel(card, text="Names and fixes", anchor="w", font=font(12, "bold")
+                         ).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 0))
+            ghost_button(card, "Edit...", self.edit_vocabulary, width=80
+                         ).grid(row=0, column=1, sticky="e", padx=12, pady=(10, 0))
+            self.vocab_summary = ctk.CTkLabel(card, text="", anchor="w", justify="left",
+                                              text_color=GRAY, font=font(11), wraplength=290)
+            self.vocab_summary.grid(row=1, column=0, columnspan=2, sticky="w", padx=12,
+                                    pady=(0, 10))
+            self.refresh_vocab_summary()
+
             card = self._section(panel, "Folders")
             self.folder_labels = {}
             for row, (key, title) in enumerate((("input_folder", "Inbox"),
@@ -1856,6 +1870,96 @@ def build_app_class():
         def set_banner(self, title, detail=""):
             self.banner_text.configure(text=title)
             self.banner_sub.configure(text=detail)
+
+        # ---------------------------------------------------------- vocabulary
+        def refresh_vocab_summary(self):
+            c = self.config_raw()
+            words = c.get("word_list") or []
+            if isinstance(words, str):
+                words = [w for w in words.replace("\n", ",").split(",") if w.strip()]
+            fixes = c.get("replacements") or {}
+            if not words and not fixes:
+                text = ("Spell station, host, sponsor and place names right, and fix "
+                        "mistakes that keep coming back.")
+            else:
+                text = (f"{len(words)} name{'s' if len(words) != 1 else ''}  ·  "
+                        f"{len(fixes)} fix{'es' if len(fixes) != 1 else ''}")
+            self.vocab_summary.configure(text=text)
+
+        def edit_vocabulary(self):
+            """A window with two lists: names to spell right, and fixes."""
+            c = self.config_raw()
+            words = c.get("word_list") or []
+            if isinstance(words, str):
+                words = [w.strip() for w in words.replace("\n", ",").split(",") if w.strip()]
+            fixes = c.get("replacements") or {}
+
+            win = ctk.CTkToplevel(self)
+            win.title("Vocabulary")
+            win.geometry("620x560")
+            win.transient(self)
+            win.after(100, win.grab_set)
+            win.grid_columnconfigure((0, 1), weight=1)
+            win.grid_rowconfigure(2, weight=1)
+
+            ctk.CTkLabel(win, text="Names to spell right", font=font(14, "bold"), anchor="w"
+                         ).grid(row=0, column=0, sticky="w", padx=(18, 8), pady=(16, 0))
+            ctk.CTkLabel(win, text="One per line: stations, hosts, sponsors, places.\n"
+                                   "Used as hints, so keep it to real names.",
+                         text_color=GRAY, font=font(11), anchor="w", justify="left"
+                         ).grid(row=1, column=0, sticky="w", padx=(18, 8))
+            word_box = ctk.CTkTextbox(win, font=font(12))
+            word_box.grid(row=2, column=0, sticky="nsew", padx=(18, 8), pady=8)
+            word_box.insert("1.0", "\n".join(words))
+
+            ctk.CTkLabel(win, text="Fixes", font=font(14, "bold"), anchor="w"
+                         ).grid(row=0, column=1, sticky="w", padx=(8, 18), pady=(16, 0))
+            ctk.CTkLabel(win, text="One per line:  wrong = right\n"
+                                   "Whole words, any capitals. e.g.  Love rate = Love Radio",
+                         text_color=GRAY, font=font(11), anchor="w", justify="left"
+                         ).grid(row=1, column=1, sticky="w", padx=(8, 18))
+            fix_box = ctk.CTkTextbox(win, font=font(12))
+            fix_box.grid(row=2, column=1, sticky="nsew", padx=(8, 18), pady=8)
+            fix_box.insert("1.0", "\n".join(f"{k} = {v}" for k, v in fixes.items()))
+
+            note = ctk.CTkLabel(win, text="Applies to files transcribed from now on.",
+                                text_color=GRAY, font=font(11), anchor="w")
+            note.grid(row=3, column=0, sticky="w", padx=18)
+            bar = ctk.CTkFrame(win, fg_color="transparent")
+            bar.grid(row=3, column=1, sticky="e", padx=18, pady=14)
+
+            def save():
+                new_words = [w.strip() for w in word_box.get("1.0", "end").splitlines()
+                             if w.strip()]
+                new_fixes, bad = {}, []
+                for line in fix_box.get("1.0", "end").splitlines():
+                    if not line.strip():
+                        continue
+                    if "=" not in line:
+                        bad.append(line.strip())
+                        continue
+                    wrong, right = line.split("=", 1)
+                    if wrong.strip():
+                        new_fixes[wrong.strip()] = right.strip()
+                if bad:
+                    messagebox.showwarning(
+                        "Vocabulary", "These fixes need an = sign (wrong = right):\n\n"
+                        + "\n".join(bad[:8]), parent=win)
+                    return
+                try:
+                    T.update_config({"word_list": new_words, "replacements": new_fixes})
+                except Exception as e:
+                    messagebox.showerror("Vocabulary", f"Couldn't save:\n{e}", parent=win)
+                    return
+                log.info("Vocabulary saved: %d names, %d fixes", len(new_words), len(new_fixes))
+                self.engine.settings_changed()
+                self.refresh_vocab_summary()
+                win.destroy()
+
+            ghost_button(bar, "Cancel", win.destroy, width=80, height=30).pack(side="right")
+            ctk.CTkButton(bar, text="Save", width=90, height=30, command=save
+                          ).pack(side="right", padx=(0, 8))
+            win.bind("<Escape>", lambda e: win.destroy())
 
         def start_update(self):
             info = self.update_info or {}

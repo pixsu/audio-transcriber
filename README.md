@@ -271,9 +271,11 @@ only in `config.json`; restart the program after editing it by hand.
 |---|---|---|
 | `input_folder` | `Documents\Audio Transcriber\Inbox` | Folder to read audio/video files from. Subfolders are not scanned. Created if missing. |
 | `output_folder` | `Documents\Audio Transcriber\Transcripts` | Folder to save `.txt` transcripts to. Created if missing. |
-| `model_size` | `small` | `tiny`, `base`, `small`, `medium` or `large-v3`. Larger is more accurate but slower and uses more memory. See [Choosing a model](#choosing-a-model). |
+| `model_size` | `small` | `tiny`, `base`, `small`, `medium`, `large-v3-turbo` or `large-v3`. Larger is more accurate but slower and uses more memory. See [Choosing a model](#choosing-a-model). |
 | `language` | `auto` | `auto` detects the language. Or force one with a code, e.g. `en` (English) or `tl` (Tagalog). |
 | `include_timestamps` | `false` | `true` writes lines like `[00:01:23 → 00:01:30] text here`. |
+| `word_list` | `[]` | Names to spell right (stations, hosts, sponsors, places), given to Whisper as hints. Edit in **Settings → Vocabulary**. Keep it to real names: common words in the list can be wrongly inserted. |
+| `replacements` | `{}` | Fixes applied to every line, e.g. `{"Love rate": "Love Radio"}`. Whole words, any capitals. Edit in **Settings → Vocabulary**. |
 | `label_music` | `false` | `true` puts `MUSIC` in front of lines where music or singing dominates (songs, jingles), e.g. `[MUSIC 00:01:23 → 00:01:30] lyrics`, or `[MUSIC] lyrics` without timestamps. Everything is still transcribed; talk over a music bed stays unlabelled. With this on, **Skip silence** is not used (it drops singing); instead only true dead air (no sound for 10 seconds or more) is skipped and marked, e.g. `[SILENCE 00:52:40 → 01:00:30]`. Uses a small sound classifier (YAMNet, 14 MB, downloaded once into `models\yamnet`) and adds only a few seconds per hour of audio. |
 | `vad_filter` | `true` | Skips silence. Good for speech; **set to `false` for music** (see below). |
 | `use_filename_hint` | `true` | Passes the cleaned file name (e.g. `Artist Song Title`) to the model to help it spell names and titles. |
@@ -302,10 +304,12 @@ Speed on a 4-minute song, measured on an Intel Core i7-12700F (CPU only):
 |---|---|---|---|
 | `small` | ~480 MB | ~30 s | Good. Best choice for low-end PCs. |
 | `medium` | ~1.5 GB | ~70–100 s | Better, especially for lyrics and non-English audio. |
+| `large-v3-turbo` | ~1.6 GB | ~1.3× medium | Best for radio: clearer names, ads and lyrics. Lines are longer (often 10–25 s each). |
 
-Slower CPUs will take proportionally longer. `large-v3-turbo` is not
-recommended for music: in testing it produced placeholder text instead of
-lyrics.
+Slower CPUs will take proportionally longer. On a 15-minute Filipino FM
+radio test (songs, ads, DJ talk) `large-v3-turbo` took 5.7 min against
+4.5 min for `medium`, and spelled sponsors and lyrics noticeably better
+(e.g. "Birch Tree Advanced", "Unique with PLDT Home Fiber Prepaid").
 
 ## Large archives and long recordings
 
