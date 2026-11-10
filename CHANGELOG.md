@@ -6,6 +6,21 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-11-10
+
+### Fixed
+- **More accurate timestamps.** Times now come from the words themselves,
+  so a line no longer "starts" at the beginning of a song intro or runs on
+  for 20 seconds after the last word.
+- **Skipped sung or chanted parts are recovered** (with Label music and
+  songs on). Whisper sometimes jumped over a jingle to the next spoken line;
+  stretches with sound but no text are now transcribed a second time on
+  their own. Only confident lines are kept, and filler Whisper invents over
+  instrumentals ("Thank you.", "Outro Music") is dropped. Adds about 25% to
+  the time of music-heavy files.
+- Lines that are one short bit repeated over and over
+  ("Pag-ag-ag-ag-ag...") are dropped.
+
 ## [1.13.0] - 2026-11-10
 
 ### Added
