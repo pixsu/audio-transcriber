@@ -6,6 +6,24 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-11-10
+
+### Added
+- **Songs and ads in the library, line by line.** **Save as jingle / ad /
+  song** now has a type (Jingle, Ad, Song) and keeps each line's time: fix
+  the words after each `[time]` and every line is written with its own
+  timestamp whenever that recording airs again, e.g.
+  `[SONG 00:01:57 → 00:01:59] …`. Useful for songs the station plays often
+  and for languages Whisper doesn't know (such as Bikol).
+- Matching works in 8-second pieces, so a song that's cut short, faded
+  early or talked over is still recognised on its clean parts (only the
+  lines in the matched part are used).
+
+### Fixed
+- Whisper repeating a phrase dozens of times ("pag-uswag na pag-uswag na
+  …") is now shortened to three times plus "…" instead of filling the line.
+- "Thank you so much." invented over music is dropped.
+
 ## [1.16.0] - 2026-11-10
 
 ### Added

@@ -34,7 +34,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.16.0"
+__version__ = "1.17.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -512,7 +512,8 @@ def strip_foreign_script(text: str) -> str:
 
 # Short lines Whisper tends to invent over instrumental music. Dropped only
 # when they come from the second pass (which re-reads music-only stretches).
-FILLER_LINES = {"thank you", "thanks", "thank you very much", "music", "intro music",
+FILLER_LINES = {"thank you", "thanks", "thank you very much", "thank you so much",
+                "music", "intro music",
                 "outro music", "background music", "instrumental", "applause"}
 
 
@@ -530,11 +531,50 @@ def is_filler(text: str) -> bool:
 
 
 def is_stuck_loop(text: str) -> bool:
-    """'Pag-ag-ag-ag-ag-ag-ag-ag...': one short bit repeated over and over,
-    making up most of the line (6+ times in a row)."""
+    """Whisper stuck repeating itself: 'Pag-ag-ag-ag-ag...' or 'pag-uswag na
+    pag-uswag na pag-uswag na ...' (a word or short phrase, 6+ times in a row,
+    making up most of the line)."""
+    words = re.findall(r"\w+", text.lower())
+    if len(words) >= 6:
+        for size in range(1, 5):  # phrases of 1-4 words
+            run, best = 1, 1
+            for i in range(size, len(words) - size + 1, size):
+                if words[i:i + size] == words[i - size:i]:
+                    run += 1
+                    best = max(best, run)
+                else:
+                    run = 1
+            if best >= 6 and best * size >= len(words) * 0.5:
+                return True
     m = max((len(x.group(0)) for x in re.finditer(r"(\w{1,6})(?:[\s,\-]+\1){5,}",
                                                     text, re.IGNORECASE)), default=0)
     return m > len(text) * 0.5
+
+
+def shorten_loop(text: str) -> str:
+    """'pag-uswag na pag-uswag na (x40)' -> 'pag-uswag na, pag-uswag na,
+    pag-uswag na…': the longest run of a repeated 1-4 word phrase is cut
+    down to three times."""
+    words = re.findall(r"[\w'\-]+", text)
+    low = [w.lower() for w in words]
+    best = None  # (covered words, start, size, repeats)
+    for size in range(1, 5):
+        i = 0
+        while i + size <= len(low):
+            reps = 1
+            while low[i + reps * size:i + (reps + 1) * size] == low[i:i + size]:
+                reps += 1
+            if reps >= 4 and (best is None or reps * size > best[0]):
+                best = (reps * size, i, size, reps)
+            i += 1
+    if not best:
+        return text
+    _, i, size, reps = best
+    phrase = " ".join(words[i:i + size])
+    before = " ".join(words[:i])
+    after = " ".join(words[i + reps * size:])
+    out = ", ".join([phrase] * 3) + "…"
+    return " ".join(p for p in (before, out, after) if p)
 
 
 def is_hallucination(text: str) -> bool:
@@ -636,7 +676,7 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
     # dead air is skipped and marked [SILENCE ...].
     use_vad = config["vad_filter"] and not config.get("label_music")
     source, music, gaps, clips = str(audio_path), None, [], "0"
-    jingle_hits = {}  # (start, end) -> text, from the jingle library
+    jingle_hits = {}  # (start, end) -> (label, text), from the jingle/song library
     library = []
     try:
         import jingles
@@ -659,14 +699,20 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
             skip += gaps
         if library:
             try:
-                for a, b, jingle in jingles.find_jingles(source, library, hooks.checkpoint):
+                names = []
+                for a, b, item, offset in jingles.find_jingles(source, library, hooks.checkpoint):
                     a, b = max(0.0, a), min(duration, b)
                     if any(b > ga and a < gb for ga, gb in gaps):
                         continue  # never over dead air
-                    jingle_hits[(a, b)] = jingle["text"] or jingle["name"]
+                    for la, lb, text, label in jingles.lines_for_match(item, a, b, offset):
+                        la, lb = max(a, la), min(b, lb)
+                        if lb > la:
+                            jingle_hits[(la, lb)] = (label, text)
                     skip.append((a, b))
-                if jingle_hits:
-                    log.info("   Jingles recognised: %d (not transcribed)", len(jingle_hits))
+                    names.append(item.get("name", "?"))
+                if names:
+                    log.info("   Recognised from the library (not transcribed): %s",
+                             ", ".join(names))
             except (Stopped, Skipped):
                 raise
             except Exception as e:
@@ -737,7 +783,11 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
         text = fix_words(seg.text.strip())
         if latin_only:
             text = strip_foreign_script(text)
-        return None if not text or is_hallucination(text) or is_stuck_loop(text) else text
+        if text and is_stuck_loop(text):
+            text = shorten_loop(text)
+            if is_stuck_loop(text):  # couldn't be tidied: drop it
+                return None
+        return None if not text or is_hallucination(text) else text
 
     found = []  # (start, end, text)
     last_report = time.time()
@@ -811,13 +861,14 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
     for start, end, text in found:
         add_gaps(start)
         seg_start, seg_end = start, end
-        if text is None:  # a recognised jingle: the library's text, as written
-            jingle_text = " ".join(jingle_hits[(start, end)].split())
+        if text is None:  # recognised from the library: its text, as written
+            label, saved = jingle_hits[(start, end)]
+            saved = " ".join(saved.split())
             if config["include_timestamps"]:
-                lines.append(f"[JINGLE {format_timestamp(start)} → "
-                             f"{format_timestamp(end)}] {jingle_text}")
+                lines.append(f"[{label} {format_timestamp(start)} → "
+                             f"{format_timestamp(end)}] {saved}")
             else:
-                lines.append(f"[JINGLE] {jingle_text}")
+                lines.append(f"[{label}] {saved}")
             continue
         tag = "MUSIC " if music is not None and (
             text == "(instrumental)" or music_detect.is_music(music, seg_start, seg_end)) else ""

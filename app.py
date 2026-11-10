@@ -405,6 +405,10 @@ def save_ico(path):
                                            (48, 48), (64, 64), (256, 256)])
 
 
+LINE_TIME = re.compile(r"\[(\d\d:\d\d:\d\d) → (\d\d:\d\d:\d\d)\]\s*(.*)")
+ANY_TIME = re.compile(r"\[\d\d:\d\d:\d\d → \d\d:\d\d:\d\d\]")
+
+
 def fix_line(line, fix):
     """Apply a text fix to one transcript line, leaving its [MUSIC 00:00:00 →
     ...] / [SILENCE ...] label untouched."""
@@ -1487,7 +1491,7 @@ def build_app_class():
                                               text_color=GRAY, font=font(11), wraplength=290)
             self.vocab_summary.grid(row=1, column=0, columnspan=2, sticky="w", padx=12,
                                     pady=(0, 4))
-            ctk.CTkLabel(card, text="Jingles and ads", anchor="w", font=font(12, "bold")
+            ctk.CTkLabel(card, text="Jingles, ads, songs", anchor="w", font=font(12, "bold")
                          ).grid(row=2, column=0, sticky="w", padx=12, pady=(10, 0))
             ghost_button(card, "Manage...", self.manage_jingles, width=80
                          ).grid(row=2, column=1, sticky="e", padx=12, pady=(10, 0))
@@ -2083,7 +2087,7 @@ def build_app_class():
                 else:
                     menu.add_command(label="Select a word first", state="disabled")
                 menu.add_separator()
-                menu.add_command(label="Save as jingle / ad...",
+                menu.add_command(label="Save as jingle / ad / song...",
                                  command=lambda: self.save_as_jingle(win, path, tk_text, status,
                                                                      reload))
                 menu.add_separator()
@@ -2131,11 +2135,20 @@ def build_app_class():
                     "The original recording for this transcript isn't in the Inbox any "
                     "more, so its sound can't be saved.", parent=parent)
                 return
-            text = " ".join(l.split("] ", 1)[-1] if l.startswith("[") else l for l in lines)
+            # Keep each line's time so songs can be saved line by line; drop
+            # labels like MUSIC and lines that are only "(instrumental)".
+            prefill = []
+            for l in lines:
+                m = self.TIME_RE.match(l)
+                body = l.split("] ", 1)[-1] if m else l
+                if body.startswith("(") and body.endswith(")"):
+                    continue
+                prefill.append(f"[{m.group(1)} → {m.group(2)}] {body}" if m else body)
+            text = "\n".join(prefill)
 
             dlg = ctk.CTkToplevel(parent)
-            dlg.title("Save as jingle / ad")
-            dlg.geometry("520x430")
+            dlg.title("Save as jingle / ad / song")
+            dlg.geometry("640x560")
             dlg.transient(parent)
             dlg.after(100, dlg.grab_set)
             dlg.grid_columnconfigure((0, 1), weight=1)
@@ -2153,15 +2166,27 @@ def build_app_class():
             end_e = ctk.CTkEntry(dlg)
             end_e.insert(0, stamps[-1].group(2))
             end_e.grid(row=3, column=1, sticky="ew", padx=(6, 18))
+            kind_box = ctk.CTkFrame(dlg, fg_color="transparent")
+            kind_box.grid(row=4, column=0, columnspan=2, sticky="ew", padx=18, pady=(10, 0))
+            ctk.CTkLabel(kind_box, text="Type", font=font(12, "bold")).pack(side="left")
+            kind = ctk.CTkSegmentedButton(kind_box, values=["Jingle", "Ad", "Song"])
+            kind.set("Song" if (self._seconds(stamps[-1].group(2))
+                                - self._seconds(stamps[0].group(1)) > 90) else "Jingle")
+            kind.pack(side="left", padx=12)
             ctk.CTkLabel(dlg, text="Correct text (written every time it plays)",
                          font=font(12, "bold"), anchor="w"
-                         ).grid(row=4, column=0, columnspan=2, sticky="w", padx=18, pady=(10, 2))
-            text_box = ctk.CTkTextbox(dlg, height=150, wrap="word")
+                         ).grid(row=5, column=0, columnspan=2, sticky="w", padx=18, pady=(10, 0))
+            ctk.CTkLabel(dlg, text="Fix the words after each [time]. Keep the times to save "
+                                   "it line by line (best for songs), or replace everything "
+                                   "with one paragraph.",
+                         text_color=GRAY, font=font(11), anchor="w", justify="left",
+                         wraplength=600).grid(row=6, column=0, columnspan=2, sticky="w", padx=18)
+            text_box = ctk.CTkTextbox(dlg, height=200, wrap="word")
             text_box.insert("1.0", text)
-            text_box.grid(row=5, column=0, columnspan=2, sticky="nsew", padx=18)
-            dlg.grid_rowconfigure(5, weight=1)
+            text_box.grid(row=7, column=0, columnspan=2, sticky="nsew", padx=18, pady=(4, 0))
+            dlg.grid_rowconfigure(7, weight=1)
             bar = ctk.CTkFrame(dlg, fg_color="transparent")
-            bar.grid(row=6, column=0, columnspan=2, sticky="e", padx=18, pady=14)
+            bar.grid(row=8, column=0, columnspan=2, sticky="e", padx=18, pady=14)
 
             def save():
                 try:
@@ -2171,8 +2196,21 @@ def build_app_class():
                     messagebox.showwarning("Save as jingle", "Times must look like 00:01:23.",
                                            parent=dlg)
                     return
-                label = name.get().strip() or "Jingle"
-                correct = " ".join(text_box.get("1.0", "end").split())
+                label = name.get().strip() or kind.get()
+                raw_lines = [l.strip() for l in text_box.get("1.0", "end").splitlines()
+                             if l.strip()]
+                timed = []
+                for l in raw_lines:
+                    m = LINE_TIME.match(l)
+                    if m and m.group(3).strip():
+                        timed.append((self._seconds(m.group(1)) - a,
+                                      self._seconds(m.group(2)) - a, m.group(3).strip()))
+                    elif timed and not m:  # untimed line: belongs to the line above
+                        ta, tb, tt = timed[-1]
+                        timed[-1] = (ta, tb, f"{tt} {l}")
+                correct = " ".join(ANY_TIME.sub(" ", " ".join(raw_lines)).split())
+                if not timed or len(timed) < len(raw_lines) // 2:
+                    timed = None  # written as one paragraph
                 if not correct:
                     messagebox.showwarning("Save as jingle", "Type the correct text first.",
                                            parent=dlg)
@@ -2183,7 +2221,8 @@ def build_app_class():
                     import jingles
                     from faster_whisper.audio import decode_audio
                     audio = decode_audio(str(audio_path))
-                    jingles.save_jingle(self.output_dir(), label, correct, audio, a, b)
+                    jingles.save_jingle(self.output_dir(), label, correct, audio, a, b,
+                                        kind=kind.get().lower(), lines=timed)
                 except Exception as e:
                     dlg.configure(cursor="")
                     messagebox.showerror("Save as jingle", str(e), parent=dlg)
@@ -2197,20 +2236,24 @@ def build_app_class():
                         f'"{label}" will be recognised in every new file.\n\n'
                         "Replace the selected lines in this transcript with it now?",
                         parent=parent):
-                    self.replace_with_jingle(path, a, b, correct)
+                    self.replace_with_jingle(path, a, b, correct, kind.get().upper(), timed)
                     reload(highlight=correct[:30])
                 status.configure(text=f'Jingle "{label}" saved')
 
             ghost_button(bar, "Cancel", dlg.destroy, width=80, height=30).pack(side="right")
-            ctk.CTkButton(bar, text="Save jingle", width=110, height=30, command=save
+            ctk.CTkButton(bar, text="Save", width=90, height=30, command=save
                           ).pack(side="right", padx=(0, 8))
             dlg.bind("<Escape>", lambda e: dlg.destroy())
 
-        def replace_with_jingle(self, path, a, b, text):
+        def replace_with_jingle(self, path, a, b, text, label="JINGLE", timed=None):
             with open(path, encoding="utf-8") as f:
                 old = f.read().split("\n")
             new, placed = [], False
-            line = f"[JINGLE {T.format_timestamp(a)} → {T.format_timestamp(b)}] {text}"
+            if timed:
+                line = "\n".join(f"[{label} {T.format_timestamp(a + ta)} → "
+                                  f"{T.format_timestamp(a + tb)}] {tt}" for ta, tb, tt in timed)
+            else:
+                line = f"[{label} {T.format_timestamp(a)} → {T.format_timestamp(b)}] {text}"
             for l in old:
                 m = self.TIME_RE.match(l)
                 inside = m and a <= self._seconds(m.group(1)) < b and not l.startswith("[SILENCE")
@@ -2233,10 +2276,10 @@ def build_app_class():
         def manage_jingles(self):
             import jingles
             win = ctk.CTkToplevel(self)
-            win.title("Jingles and ads")
+            win.title("Jingles, ads and songs")
             win.geometry("620x480")
             win.transient(self)
-            ctk.CTkLabel(win, text="Saved jingles and ads", font=font(14, "bold"), anchor="w"
+            ctk.CTkLabel(win, text="Saved jingles, ads and songs", font=font(14, "bold"), anchor="w"
                          ).pack(fill="x", padx=18, pady=(14, 0))
             ctk.CTkLabel(win, text="Shared by every PC that uses this Transcripts folder. "
                                    "To add one: open a transcript, select the jingle's lines, "
@@ -2257,7 +2300,11 @@ def build_app_class():
                     row.pack(fill="x", pady=4)
                     info = ctk.CTkFrame(row, fg_color="transparent")
                     info.pack(side="left", fill="x", expand=True, padx=12, pady=8)
-                    ctk.CTkLabel(info, text=f"{j['name']}  ·  {j.get('seconds', 0):.0f} s",
+                    kind_label = {"song": "Song", "ad": "Ad"}.get(j.get("kind"), "Jingle")
+                    n_lines = len(j.get("lines") or [])
+                    extra = f"  ·  {n_lines} lines" if n_lines else ""
+                    ctk.CTkLabel(info, text=f"{j['name']}  ·  {kind_label}  ·  "
+                                            f"{j.get('seconds', 0):.0f} s{extra}",
                                  font=font(12, "bold"), anchor="w").pack(fill="x")
                     ctk.CTkLabel(info, text=shorten(j.get("text", ""), 90), text_color=GRAY,
                                  font=font(11), anchor="w").pack(fill="x")
