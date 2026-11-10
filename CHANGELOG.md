@@ -6,6 +6,19 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.10.3] - 2026-11-10
+
+### Fixed
+- **Missing speech in radio recordings.** Two causes, both fixed:
+  - Logger file names like `2026-04-26 00-00-00 DWCM - FM (Backup).mp3`
+    were given to Whisper as a meaningless hint, which could blank out the
+    start of the file. Numbers and words like "Backup" or "FM" are now
+    ignored, and no hint is used unless at least two real words are left.
+  - After a repeated lyric, Whisper could get stuck and skip minutes of
+    clear speech. Each 30-second chunk is now transcribed without the
+    previous chunk's text. On a test recording this recovered the intro and
+    two minutes of prayer and station sign-off (41 → 109 lines).
+
 ## [1.10.2] - 2026-11-09
 
 ### Fixed

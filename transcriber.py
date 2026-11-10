@@ -29,7 +29,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.10.2"
+__version__ = "1.10.3"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -390,6 +390,8 @@ def format_timestamp(seconds: float) -> str:
 FILENAME_JUNK = {
     "official", "video", "audio", "lyrics", "lyric", "music", "mv", "hd", "hq",
     "visualizer", "savetube", "vip", "y2mate", "com", "net", "download", "feat", "ft",
+    # Recorder / logger names like "2026-04-26 00-00-00 DWCM - FM (Backup)"
+    "backup", "fm", "am", "rec", "recording", "copy", "final", "track",
 }
 
 
@@ -403,10 +405,14 @@ def filename_hint(path: Path):
         lower = word.lower()
         if not word or lower in FILENAME_JUNK:
             continue
-        # Skip codes like "ytmp4" or "1080p" (letters mixed with digits).
-        if any(c.isdigit() for c in word) and not word.isdigit():
+        # Skip numbers (dates, times) and codes like "ytmp4" or "1080p".
+        if any(c.isdigit() for c in word):
             continue
         words.append(word)
+    # One leftover word (e.g. a station's call sign) says too little, and a
+    # meaningless hint makes Whisper skip whole stretches of audio.
+    if len(words) < 2:
+        return None
     hint = " ".join(words)[:100]
     # An all-lowercase hint makes the model write the whole transcript in
     # lowercase, so capitalise it ("katy perry" -> "Katy Perry").
@@ -518,6 +524,10 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
             # Check several 30s chunks when detecting the language, not just the
             # first one (song intros are often instrumental).
             language_detection_segments=4,
+            # Don't feed each 30-second chunk the text of the previous one.
+            # On radio recordings that made Whisper get stuck repeating a
+            # lyric and then write nothing for minutes of clear speech.
+            condition_on_previous_text=False,
         )
 
     if info is None:
