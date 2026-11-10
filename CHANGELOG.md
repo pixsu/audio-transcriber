@@ -6,6 +6,23 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-11-10
+
+### Added
+- **Nothing is left blank** (with Label music and songs on): stretches
+  with sound but no words get their own timestamped line, e.g.
+  `[MUSIC 00:00:22 → 00:00:45] (instrumental)` or `(unclear speech)`.
+
+### Fixed
+- **Same result every time.** Whisper retries hard parts with some
+  randomness, so re-transcribing a file could give different (sometimes
+  worse) results. It now starts from a fixed point and a file always comes
+  out the same.
+- The second pass over skipped stretches is more reliable: it no longer
+  uses random retries, and tries each half of a stretch if the whole one
+  gives nothing.
+- Caption words Whisper invents ("Outro", "Intro Music") are dropped.
+
 ## [1.14.0] - 2026-11-10
 
 ### Fixed

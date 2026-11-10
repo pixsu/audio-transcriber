@@ -34,7 +34,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.14.0"
+__version__ = "1.15.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -516,6 +516,15 @@ FILLER_LINES = {"thank you", "thanks", "thank you very much", "music", "intro mu
                 "outro music", "background music", "instrumental", "applause"}
 
 
+# Never real content in a transcript: Whisper writes these as captions.
+CAPTION_WORDS = {"outro", "intro", "music", "intro music", "outro music",
+                 "background music", "instrumental", "instrumental music"}
+
+
+def is_caption(text: str) -> bool:
+    return " ".join(re.sub(r"[^\w\s]", "", text.lower()).split()) in CAPTION_WORDS
+
+
 def is_filler(text: str) -> bool:
     return " ".join(re.sub(r"[^\w\s]", "", text.lower()).split()) in FILLER_LINES
 
@@ -534,18 +543,20 @@ def is_hallucination(text: str) -> bool:
 
 
 HOLE_MIN_SECONDS = 6.0
+EMPTY_LABEL_SECONDS = 4.0  # shorter pauses between lines aren't labelled
 
 
-def find_holes(found, clips):
+def find_holes(found, clips, min_seconds=None):
     """Stretches of at least HOLE_MIN_SECONDS inside the parts with sound
     (clips: [start, end, start, end, ...]) that got no text."""
+    min_seconds = HOLE_MIN_SECONDS if min_seconds is None else min_seconds
     holes = []
     pairs = list(zip(clips[0::2], clips[1::2]))
     for a, b in pairs:
         inside = sorted((s, e) for s, e, _ in found if e > a and s < b)
         pos = a
         for s, e in inside + [(b, b)]:
-            if s - pos >= HOLE_MIN_SECONDS:
+            if s - pos >= min_seconds:
                 holes.append((round(pos, 2), round(s, 2)))
             pos = max(pos, e)
     return holes
@@ -649,6 +660,13 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
             # intro or ends 20 seconds after the last word.
             word_timestamps=True,
     )
+    # Whisper retries hard parts with some randomness. A fixed starting
+    # point makes a file come out the same every time it's transcribed.
+    try:
+        import ctranslate2
+        ctranslate2.set_random_seed(1234)
+    except Exception:
+        pass
     if not clips:  # the whole file is silent
         segments, info = iter(()), None
     else:
@@ -695,7 +713,7 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
         if info.duration:
             hooks.progress(audio_path, min(first_share, seg.end / info.duration * first_share))
         text = clean(seg)
-        if text:
+        if text and not is_caption(text) and seg.end - seg.start >= 0.2:
             found.append((seg.start, seg.end, text))
         # Show a progress percentage every ~15 seconds for long files.
         if info.duration and time.time() - last_report > 15:
@@ -712,26 +730,49 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
         holes = find_holes(found, sound)
         if holes:
             added = 0
-            for n, (a, b) in enumerate(holes):
-                hooks.checkpoint()
-                hooks.progress(audio_path, first_share + (100 - first_share) * n / len(holes))
-                extra, _ = model.transcribe(source, clip_timestamps=[a, b], **options)
+            # No random retries here: on a short stretch on its own, the
+            # plain best guess is the most reliable.
+            second = dict(options, temperature=0.0)
+
+            def read_stretch(a, b):
+                got = []
+                extra, _ = model.transcribe(source, clip_timestamps=[a, b], **second)
                 for seg in extra:
                     if seg.no_speech_prob > 0.6 and seg.avg_logprob < -0.8:
                         continue  # probably invented over music
                     text = clean(seg)
-                    if text and not is_filler(text) and seg.end - seg.start > 0.3:
-                        found.append((seg.start, seg.end, text))
-                        added += 1
+                    if (text and not is_filler(text) and not is_caption(text)
+                            and seg.end - seg.start > 0.3):
+                        got.append((seg.start, seg.end, text))
+                return got
+
+            for n, (a, b) in enumerate(holes):
+                hooks.checkpoint()
+                hooks.progress(audio_path, first_share + (100 - first_share) * n / len(holes))
+                got = read_stretch(a, b)
+                if not got and b - a >= 2 * HOLE_MIN_SECONDS:
+                    # Still nothing: try each half on its own once.
+                    mid = (a + b) / 2
+                    got = read_stretch(a, mid) + read_stretch(mid, b)
+                found.extend(got)
+                added += len(got)
             log.info("   Second pass over %d skipped stretch(es): %d line(s) recovered",
                      len(holes), added)
+            found.sort(key=lambda f: f[0])
+
+        # Whatever is still without text gets a line too, so nothing in the
+        # transcript is silently blank: "(instrumental)" for music,
+        # "(unclear speech)" when there's a voice Whisper couldn't make out.
+        if music is not None:
+            for a, b in find_holes(found, sound, min_seconds=EMPTY_LABEL_SECONDS):
+                found.append((a, b, music_detect.describe_empty(music, a, b)))
             found.sort(key=lambda f: f[0])
 
     for start, end, text in found:
         add_gaps(start)
         seg_start, seg_end = start, end
-        tag = "MUSIC " if music is not None and music_detect.is_music(
-            music, seg_start, seg_end) else ""
+        tag = "MUSIC " if music is not None and (
+            text == "(instrumental)" or music_detect.is_music(music, seg_start, seg_end)) else ""
         if config["include_timestamps"]:
             lines.append(f"[{tag}{format_timestamp(seg_start)} → "
                          f"{format_timestamp(seg_end)}] {text}")

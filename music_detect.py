@@ -167,6 +167,21 @@ def sound_clips(gaps, duration: float):
     return clips
 
 
+def describe_empty(scores, start: float, end: float) -> str:
+    """What a stretch with sound but no transcribed words most likely is."""
+    a = max(0, int(start / PATCH_SECONDS))
+    b = min(len(scores), max(a + 1, int(np.ceil(end / PATCH_SECONDS))))
+    if a >= len(scores):
+        return "(no clear words)"
+    music = float(np.mean(scores[a:b, 0]))
+    speech = float(np.mean(scores[a:b, 1]))
+    if speech >= 0.5 and speech > music:
+        return "(unclear speech)"
+    if music >= 0.3:
+        return "(instrumental)"
+    return "(no clear words)"
+
+
 def is_music(scores, start: float, end: float) -> bool:
     """True when music clearly dominates the time span (seconds).
 
