@@ -1924,13 +1924,21 @@ def build_app_class():
 
             top = ctk.CTkFrame(win, fg_color="transparent")
             top.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 6))
-            ctk.CTkLabel(top, text="Spotted a wrong word? Select it (or double-click it), "
-                                   "then right-click → Correct.",
-                         text_color=GRAY, font=font(12), anchor="w").pack(side="left")
-            ghost_button(top, "Show in folder", lambda: show_in_folder(path), width=104
+            READ_HINT = ("Wrong word? Double-click it, then right-click → Correct.  "
+                         "Bigger changes: Edit.")
+            EDIT_HINT = ("Editing: type, delete, or press Enter to split a line. "
+                         "Click Save when done.")
+            hint = ctk.CTkLabel(top, text=READ_HINT, text_color=GRAY, font=font(12), anchor="w")
+            hint.pack(side="left")
+            # Reading mode buttons
+            read_bar = ctk.CTkFrame(top, fg_color="transparent")
+            read_bar.pack(side="right")
+            ghost_button(read_bar, "Show in folder", lambda: show_in_folder(path), width=104
                          ).pack(side="right")
-            ghost_button(top, "Open in Notepad", lambda: open_path(path), width=116
+            ghost_button(read_bar, "Open in Notepad", lambda: open_path(path), width=116
                          ).pack(side="right", padx=8)
+            # Editing mode buttons
+            edit_bar = ctk.CTkFrame(top, fg_color="transparent")
 
             box = ctk.CTkTextbox(win, font=ctk.CTkFont(family="Consolas", size=13), wrap="word")
             box.grid(row=1, column=0, sticky="nsew", padx=16)
@@ -1972,7 +1980,73 @@ def build_app_class():
                 box.configure(state="disabled")
                 tk_text.yview_moveto(y)
 
+            # ------------------------------------------------------- editing
+            editing = {"on": False, "original": ""}
+
+            def current_text():
+                return tk_text.get("1.0", "end-1c")
+
+            def start_edit():
+                editing.update(on=True, original=current_text())
+                tk_text.tag_remove("fixed", "1.0", "end")
+                box.configure(state="normal")
+                tk_text.configure(undo=True, autoseparators=True, maxundo=-1)
+                tk_text.edit_reset()
+                read_bar.pack_forget()
+                edit_bar.pack(side="right")
+                hint.configure(text=EDIT_HINT)
+                status.configure(text="")
+                tk_text.focus_set()
+
+            def stop_edit():
+                editing["on"] = False
+                box.configure(state="disabled")
+                edit_bar.pack_forget()
+                read_bar.pack(side="right")
+                hint.configure(text=READ_HINT)
+
+            def save_edit():
+                new_text = current_text().rstrip("\n") + "\n"
+                tmp = path.with_name(path.name + f".{T.HOSTNAME}.edit")
+                try:
+                    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+                        f.write(new_text)
+                    os.replace(tmp, path)
+                except OSError as e:
+                    messagebox.showerror("Save transcript", f"Couldn't save:\n{e}", parent=win)
+                    return False
+                log.info("Transcript edited: %s", path.name)
+                stop_edit()
+                status.configure(text=f"Saved  ·  {datetime.now():%H:%M}")
+                self.last_completed_scan = 0.0  # refresh word counts
+                return True
+
+            def cancel_edit():
+                if current_text() != editing["original"] and not messagebox.askyesno(
+                        "Discard changes?", "Throw away the changes you made?", parent=win):
+                    return
+                stop_edit()
+                reload()
+                status.configure(text="Changes discarded.")
+
+            def close_window(event=None):
+                if editing["on"] and current_text() != editing["original"]:
+                    answer = messagebox.askyesnocancel(
+                        "Save changes?", "Save the changes to this transcript?", parent=win)
+                    if answer is None or (answer and not save_edit()):
+                        return
+                win.destroy()
+
+            edit_btn = ctk.CTkButton(read_bar, text="Edit", width=70, height=28,
+                                     command=start_edit)
+            edit_btn.pack(side="right", padx=(0, 8))
+            ghost_button(edit_bar, "Cancel", cancel_edit, width=80, height=28).pack(side="right")
+            ctk.CTkButton(edit_bar, text="Save", width=80, height=28, command=save_edit
+                          ).pack(side="right", padx=(0, 8))
+
             def correct(event=None):
+                if editing["on"]:
+                    return
                 wrong = selected_word(event)
                 if not wrong or len(wrong) > 60 or "\n" in wrong:
                     status.configure(text="Select a word or a few words first.")
@@ -1982,8 +2056,17 @@ def build_app_class():
             menu = tk.Menu(win, tearoff=0)
 
             def popup(event):
-                word = selected_word(event)
                 menu.delete(0, "end")
+                if editing["on"]:
+                    for label, ev in (("Cut", "<<Cut>>"), ("Copy", "<<Copy>>"),
+                                      ("Paste", "<<Paste>>")):
+                        menu.add_command(label=label,
+                                         command=lambda e=ev: tk_text.event_generate(e))
+                    menu.add_separator()
+                    menu.add_command(label="Undo", command=lambda: tk_text.event_generate("<<Undo>>"))
+                    menu.tk_popup(event.x_root, event.y_root)
+                    return
+                word = selected_word(event)
                 if word and len(word) <= 60 and "\n" not in word:
                     menu.add_command(label=f'Correct "{shorten(word, 30)}"...',
                                      command=lambda: self.ask_correction(
@@ -1996,8 +2079,11 @@ def build_app_class():
 
             tk_text.bind("<Button-3>", popup)
             win.bind("<Control-e>", correct)
-            win.bind("<Escape>", lambda e: win.destroy())
+            win.bind("<Control-s>", lambda e: save_edit() if editing["on"] else None)
+            win.bind("<Escape>", lambda e: cancel_edit() if editing["on"] else close_window())
+            win.protocol("WM_DELETE_WINDOW", close_window)
             win.after(100, win.focus_force)
+            win._start_edit, win._save_edit, win._text = start_edit, save_edit, tk_text  # tests
 
         def ask_correction(self, parent, path, wrong, status, reload):
             """'Correct "Tuyoy" to: [Tuloy]', only here or always."""

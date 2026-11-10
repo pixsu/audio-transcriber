@@ -6,6 +6,14 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-11-10
+
+### Added
+- **Edit transcripts in the app.** The transcript window has an **Edit**
+  button: rewrite sentences, delete lines or press Enter to split a line,
+  then **Save** (Ctrl+S) or **Cancel**. Closing with unsaved changes asks
+  first. Right-click → Correct still works for word fixes when not editing.
+
 ## [1.12.0] - 2026-11-10
 
 ### Added
