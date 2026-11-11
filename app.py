@@ -2225,87 +2225,109 @@ def build_app_class():
             text = " ".join(prefill)
 
             def after_saved(label, a, b, correct, kind_name):
-                if messagebox.askyesno(
-                        "Jingle saved",
-                        f'"{label}" will be recognised in every new file.\n\n'
-                        "Replace the selected lines in this transcript with it now?",
-                        parent=parent):
-                    self.replace_with_jingle(path, a, b, correct, kind_name.upper())
-                    reload(highlight=correct[:30])
-                status.configure(text=f'Jingle "{label}" saved')
+                self.replace_with_jingle(path, a, b, correct, kind_name.upper())
+                reload(highlight=correct[:30])
+                status.configure(text=f'Saved "{label}". It will be written like this in '
+                                      "every new file.")
 
+            a0 = self._seconds(stamps[0].group(1))
+            b0 = self._seconds(stamps[-1].group(2))
             self.jingle_dialog(parent, audio_path, stamps[0].group(1), stamps[-1].group(2),
-                               text, after_saved)
+                               text, after_saved,
+                               summary=f"{self.describe_length(b0 - a0)} · from the lines you "
+                                       "selected")
 
-        def jingle_dialog(self, parent, audio_path, start_text, end_text, text, after_saved):
-            """Name, times, type and correct text -> saved in the library."""
+        @staticmethod
+        def guess_kind(seconds):
+            return "Song" if seconds > 90 else "Jingle"
+
+        @staticmethod
+        def describe_length(seconds):
+            seconds = int(round(seconds))
+            if seconds < 60:
+                return f"{seconds} s"
+            return f"{seconds // 60} min {seconds % 60} s" if seconds % 60 else f"{seconds // 60} min"
+
+        @staticmethod
+        def name_from_text(text, kind):
+            words = re.findall(r"[\w'\-]+", text)[:5]
+            return " ".join(words).strip().capitalize() if words else kind
+
+        def jingle_dialog(self, parent, audio_path, start_text, end_text, text, after_saved,
+                          summary=""):
+            """Save a jingle / ad / song. Only the words are asked for; the
+            name, type and times are filled in and kept under More options."""
+            seconds = self._seconds(end_text) - self._seconds(start_text)
+            kind_guess = self.guess_kind(seconds)
             dlg = ctk.CTkToplevel(parent)
-            dlg.title("Save as jingle / ad / song")
-            dlg.geometry("640x560")
+            dlg.title(f"Save {kind_guess.lower()}")
+            dlg.geometry("560x420")
             dlg.transient(parent)
             dlg.after(100, dlg.grab_set)
-            dlg.grid_columnconfigure((0, 1), weight=1)
-            ctk.CTkLabel(dlg, text="Name", font=font(12, "bold"), anchor="w"
-                         ).grid(row=0, column=0, columnspan=2, sticky="w", padx=18, pady=(14, 2))
-            name = ctk.CTkEntry(dlg, placeholder_text="e.g. Love Radio – Tuloy ang ligaya")
-            name.grid(row=1, column=0, columnspan=2, sticky="ew", padx=18)
-            ctk.CTkLabel(dlg, text="Starts at", font=font(12, "bold"), anchor="w"
-                         ).grid(row=2, column=0, sticky="w", padx=(18, 6), pady=(10, 2))
-            ctk.CTkLabel(dlg, text="Ends at", font=font(12, "bold"), anchor="w"
-                         ).grid(row=2, column=1, sticky="w", padx=(6, 18), pady=(10, 2))
-            start_e = ctk.CTkEntry(dlg)
-            start_e.insert(0, start_text)
-            start_e.grid(row=3, column=0, sticky="ew", padx=(18, 6))
-            end_e = ctk.CTkEntry(dlg)
-            end_e.insert(0, end_text)
-            end_e.grid(row=3, column=1, sticky="ew", padx=(6, 18))
-            kind_box = ctk.CTkFrame(dlg, fg_color="transparent")
-            kind_box.grid(row=4, column=0, columnspan=2, sticky="ew", padx=18, pady=(10, 0))
-            ctk.CTkLabel(kind_box, text="Type", font=font(12, "bold")).pack(side="left")
-            kind = ctk.CTkSegmentedButton(kind_box, values=["Jingle", "Ad", "Song"])
-            kind.set("Song" if self._seconds(end_text) - self._seconds(start_text) > 90
-                     else "Jingle")
-            kind.pack(side="left", padx=12)
-            ctk.CTkLabel(dlg, text="Correct text (written every time it plays)",
-                         font=font(12, "bold"), anchor="w"
-                         ).grid(row=5, column=0, columnspan=2, sticky="w", padx=18, pady=(10, 0))
-            ctk.CTkLabel(dlg, text="Type it the way it should appear in the transcript. "
-                                   "It's written as one line, timed from start to end.",
-                         text_color=GRAY, font=font(11), anchor="w", justify="left",
-                         wraplength=600).grid(row=6, column=0, columnspan=2, sticky="w", padx=18)
-            text_box = ctk.CTkTextbox(dlg, height=200, wrap="word")
+            dlg.grid_columnconfigure(0, weight=1)
+            heading = ctk.CTkLabel(dlg, text=f"Save {kind_guess.lower()}", font=font(15, "bold"),
+                                   anchor="w")
+            heading.grid(row=0, column=0, sticky="w", padx=18, pady=(14, 0))
+            ctk.CTkLabel(dlg, text=summary or self.describe_length(seconds), text_color=GRAY,
+                         font=font(11), anchor="w").grid(row=1, column=0, sticky="w", padx=18)
+            ctk.CTkLabel(dlg, text="Correct words", font=font(12, "bold"), anchor="w"
+                         ).grid(row=2, column=0, sticky="w", padx=18, pady=(12, 4))
+            text_box = ctk.CTkTextbox(dlg, height=110, wrap="word")
             text_box.insert("1.0", text)
-            text_box.grid(row=7, column=0, columnspan=2, sticky="nsew", padx=18, pady=(4, 0))
-            dlg.grid_rowconfigure(7, weight=1)
+            text_box.grid(row=3, column=0, sticky="nsew", padx=18)
+            dlg.grid_rowconfigure(3, weight=1)
+            text_box.after(150, text_box.focus_set)
+
+            # More options (hidden until asked for)
+            more = ctk.CTkFrame(dlg, fg_color="transparent")
+            more.grid_columnconfigure((0, 1), weight=1, uniform="opt")
+            fields = {}
+            for i, (label, value) in enumerate((("Name", ""), ("Type", kind_guess),
+                                                ("Starts", start_text), ("Ends", end_text))):
+                r0, col = (i // 2) * 2, i % 2
+                ctk.CTkLabel(more, text=label, text_color=GRAY, font=font(11), anchor="w"
+                             ).grid(row=r0, column=col, sticky="w", padx=(0, 8),
+                                    pady=(6 if r0 else 0, 0))
+                if label == "Type":
+                    w = ctk.CTkSegmentedButton(more, values=["Jingle", "Ad", "Song"])
+                    w.set(value)
+                else:
+                    w = ctk.CTkEntry(more, height=30,
+                                     placeholder_text="from the words" if label == "Name" else "")
+                    if value:
+                        w.insert(0, value)
+                w.grid(row=r0 + 1, column=col, sticky="ew", padx=(0, 8))
+                fields[label] = w
+            toggle = ctk.CTkLabel(dlg, text="▸ More options", text_color=BLUE, font=font(11),
+                                  anchor="w", cursor="hand2")
+            toggle.grid(row=4, column=0, sticky="w", padx=18, pady=(8, 0))
+
+            def flip(event=None):
+                if more.grid_info():
+                    more.grid_remove()
+                    toggle.configure(text="▸ More options")
+                else:
+                    more.grid(row=5, column=0, sticky="ew", padx=18, pady=(6, 0))
+                    toggle.configure(text="▾ Fewer options")
+            toggle.bind("<Button-1>", flip)
             bar = ctk.CTkFrame(dlg, fg_color="transparent")
-            bar.grid(row=8, column=0, columnspan=2, sticky="e", padx=18, pady=14)
+            bar.grid(row=6, column=0, sticky="e", padx=18, pady=14)
 
             def save():
-                try:
-                    a = self._seconds(start_e.get().strip())
-                    b = self._seconds(end_e.get().strip())
-                except ValueError:
-                    messagebox.showwarning("Save as jingle", "Times must look like 00:01:23.",
-                                           parent=dlg)
-                    return
-                label = name.get().strip() or kind.get()
-                raw_lines = [l.strip() for l in text_box.get("1.0", "end").splitlines()
-                             if l.strip()]
-                timed = []
-                for l in raw_lines:
-                    m = LINE_TIME.match(l)
-                    if m and m.group(3).strip():
-                        timed.append((self._seconds(m.group(1)) - a,
-                                      self._seconds(m.group(2)) - a, m.group(3).strip()))
-                    elif timed and not m:  # untimed line: belongs to the line above
-                        ta, tb, tt = timed[-1]
-                        timed[-1] = (ta, tb, f"{tt} {l}")
-                correct = " ".join(ANY_TIME.sub(" ", " ".join(raw_lines)).split())
-                timed = None  # always written as one normal line
+                correct = " ".join(text_box.get("1.0", "end").split())
                 if not correct:
-                    messagebox.showwarning("Save as jingle", "Type the correct text first.",
-                                           parent=dlg)
+                    messagebox.showwarning("Save", "Type the correct words first.", parent=dlg)
                     return
+                try:
+                    a = self._seconds(fields["Starts"].get().strip())
+                    b = self._seconds(fields["Ends"].get().strip())
+                except ValueError:
+                    if not more.grid_info():
+                        flip()
+                    messagebox.showwarning("Save", "Times must look like 00:01:23.", parent=dlg)
+                    return
+                kind_name = fields["Type"].get() or kind_guess
+                label = fields["Name"].get().strip() or self.name_from_text(correct, kind_name)
                 dlg.configure(cursor="watch")
                 dlg.update()
                 try:
@@ -2313,20 +2335,24 @@ def build_app_class():
                     from faster_whisper.audio import decode_audio
                     audio = decode_audio(str(audio_path))
                     jingles.save_jingle(self.output_dir(), label, correct, audio, a, b,
-                                        kind=kind.get().lower(), lines=timed)
+                                        kind=kind_name.lower())
                 except Exception as e:
                     dlg.configure(cursor="")
-                    messagebox.showerror("Save as jingle", str(e), parent=dlg)
+                    if "seconds" in str(e) and not more.grid_info():
+                        flip()
+                    messagebox.showerror("Save", str(e), parent=dlg)
                     return
-                log.info('Jingle saved: "%s" (%s, %d s)', label, audio_path.name, b - a)
+                log.info('Saved %s "%s" (%s, %d s)', kind_name.lower(), label,
+                         Path(audio_path).name, b - a)
                 dlg.destroy()
                 self.refresh_vocab_summary()
-                after_saved(label, a, b, correct, kind.get())
+                after_saved(label, a, b, correct, kind_name)
 
             ghost_button(bar, "Cancel", dlg.destroy, width=80, height=30).pack(side="right")
             ctk.CTkButton(bar, text="Save", width=90, height=30, command=save
                           ).pack(side="right", padx=(0, 8))
             dlg.bind("<Escape>", lambda e: dlg.destroy())
+            dlg._text, dlg._save, dlg._flip = text_box, save, flip  # (for tests)
 
         # ----------------------------------------------------- repeat finder
         REPEAT_FILES = 30   # newest recordings scanned
@@ -2429,10 +2455,8 @@ def build_app_class():
                     info.configure(text="No repeated audio found that isn't in the library "
                                         "already. Try again when more recordings are in.")
                     return
-                info.configure(text=f"{len(results)} stretch(es) of audio aired more than once. "
-                                    "Save the ones that are jingles, ads or songs: type the "
-                                    "correct text once, and they'll be written right in every "
-                                    "file from then on.")
+                info.configure(text="These played more than once. Save the ones you want "
+                                    "written correctly every time.")
                 for r in results[:60]:
                     path0, a0, b0 = r["places"][0]
                     row = ctk.CTkFrame(body, corner_radius=8)
@@ -2441,22 +2465,19 @@ def build_app_class():
                     save_btn.pack(side="right", padx=12)  # first, so it's never squeezed
                     left = ctk.CTkFrame(row, fg_color="transparent")
                     left.pack(side="left", fill="x", expand=True, padx=12, pady=8)
-                    ctk.CTkLabel(left, text=f"{r['seconds']:.0f} s  ·  aired {r['count']} times",
-                                 font=font(12, "bold"), anchor="w").pack(fill="x")
-                    where = "  ·  ".join(f"{shorten(Path(p).stem, 22)} at {T.format_timestamp(a)}"
-                                         for p, a, _ in r["places"][:2])
-                    if r["count"] > 2:
-                        where += f"  ·  and {r['count'] - 2} more"
-                    ctk.CTkLabel(left, text=where, text_color=GRAY, font=font(11), anchor="w",
-                                 justify="left", wraplength=540).pack(fill="x")
+                    title = (f"{self.guess_kind(r['seconds'])}  ·  "
+                             f"{self.describe_length(r['seconds'])}  ·  aired {r['count']} times")
+                    ctk.CTkLabel(left, text=title, font=font(12, "bold"), anchor="w"
+                                 ).pack(fill="x")
                     excerpt = ""
                     for p, pa, pb in r["places"]:  # text from any airing that has some
                         excerpt = self.transcript_excerpt(p, pa, pb)
                         if excerpt:
                             break
-                    ctk.CTkLabel(left, text=shorten(excerpt, 110) if excerpt else
-                                 "(no transcript text yet)", font=font(11), anchor="w",
-                                 justify="left", wraplength=520).pack(fill="x")
+                    ctk.CTkLabel(left, text=shorten(excerpt, 110) if excerpt else "No words yet",
+                                 font=font(11), anchor="w", justify="left", wraplength=520,
+                                 text_color=GRAY if excerpt else ("gray55", "gray50")
+                                 ).pack(fill="x")
 
                     def save(r=r, row=row, excerpt=excerpt):
                         path, a, b = r["places"][0]
@@ -2464,24 +2485,26 @@ def build_app_class():
                         def after_saved(label, sa, sb, correct, kind_name):
                             row.destroy()
                             fixed = 0
-                            if messagebox.askyesno(
-                                    "Saved",
-                                    f'"{label}" will be recognised in every new file.\n\n'
-                                    f"Also put it in the {r['count']} transcripts where it "
-                                    "aired?", parent=win):
-                                for p, pa, pb in r["places"]:
-                                    tp = self.transcript_for(p)
-                                    if tp:
-                                        shift = sa - a  # keep any trimming of the times
+                            for p, pa, pb in r["places"]:
+                                tp = self.transcript_for(p)
+                                if tp:
+                                    shift = sa - a  # keep any trimming of the times
+                                    try:
                                         self.replace_with_jingle(
                                             tp, pa + shift, pa + shift + (sb - sa),
                                             correct, kind_name.upper())
                                         fixed += 1
-                            info.configure(text=f'"{label}" saved' + (
-                                f", and written into {fixed} transcript(s)." if fixed else "."))
+                                    except OSError as e:
+                                        log.warning("Couldn't update %s: %s", tp.name, e)
+                            info.configure(text=f'Saved "{label}"' + (
+                                f", and written into {fixed} transcript"
+                                f"{'s' if fixed != 1 else ''}." if fixed else "."))
 
                         self.jingle_dialog(win, Path(path), T.format_timestamp(a),
-                                           T.format_timestamp(b), excerpt, after_saved)
+                                           T.format_timestamp(b), excerpt, after_saved,
+                                           summary=f"{self.describe_length(r['seconds'])} · "
+                                                   f"aired {r['count']} times · found "
+                                                   "automatically")
 
                     save_btn.configure(command=save)
 

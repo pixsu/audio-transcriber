@@ -6,6 +6,17 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-11-11
+
+### Changed
+- **Saving a jingle, ad or song asks only for the correct words.** The
+  times, name and type are filled in automatically (name from the first
+  words, type from the length) and tucked under **More options**.
+- **Find repeats** lists each clip as "Jingle · 38 s · aired 4 times" with
+  its words underneath, and saving writes it straight into the transcripts
+  where it aired (no extra question). Saving from a transcript's selected
+  lines replaces those lines straight away too.
+
 ## [1.21.0] - 2026-11-11
 
 ### Added
