@@ -6,6 +6,14 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.18.1] - 2026-11-11
+
+### Changed
+- Stretches where music plays but no words can be made out are labelled
+  `(music, no clear words)` instead of `(instrumental)`: they are often a
+  song's musical break or wordless "la la la" singing, not music without a
+  song.
+
 ## [1.18.0] - 2026-11-11
 
 ### Changed

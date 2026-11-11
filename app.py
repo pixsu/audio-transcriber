@@ -2135,7 +2135,7 @@ def build_app_class():
                     "The original recording for this transcript isn't in the Inbox any "
                     "more, so its sound can't be saved.", parent=parent)
                 return
-            # The words only: no times, labels or "(instrumental)" lines.
+            # The words only: no times, labels or "(music, no clear words)" lines.
             prefill = []
             for l in lines:
                 body = l.split("] ", 1)[-1] if self.TIME_RE.match(l) else l

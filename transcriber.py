@@ -34,7 +34,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.18.0"
+__version__ = "1.18.1"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -842,7 +842,7 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
 
     # --- one continuous timeline ------------------------------------------
     # Every line starts where the one before ended. Pauses of 3 seconds or
-    # more get their own line ([SILENCE ...], (instrumental), ...); shorter
+    # more get their own line ([SILENCE ...], (music, no clear words), ...); shorter
     # ones are joined onto the line before, so the times never jump.
     entries = []  # (start, end, kind, text)
     for a, b, text in found:
@@ -864,7 +864,7 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
                 return "SILENCE", ""
         if music is not None:
             label = music_detect.describe_empty(music, a, b)
-            return ("MUSIC" if label == "(instrumental)" else "text"), label
+            return ("MUSIC" if label == "(music, no clear words)" else "text"), label
         return "text", "(no clear words)"
 
     timeline = []

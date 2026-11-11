@@ -178,7 +178,7 @@ def describe_empty(scores, start: float, end: float) -> str:
     if speech >= 0.5 and speech > music:
         return "(unclear speech)"
     if music >= 0.3:
-        return "(instrumental)"
+        return "(music, no clear words)"
     return "(no clear words)"
 
 
