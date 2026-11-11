@@ -6,6 +6,15 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.23.0] - 2026-11-11
+
+### Added
+- **▶ Play** in Find repeats and in the save window: hear the clip before
+  saving it (click again to stop).
+- The save window says where the clip was heard ("Heard in … at 00:00:12
+  (and 3 more)"), and **Open transcript** opens that transcript scrolled
+  to the moment, with the clip's lines highlighted.
+
 ## [1.22.0] - 2026-11-11
 
 ### Changed

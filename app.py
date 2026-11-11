@@ -2000,7 +2000,7 @@ def build_app_class():
 
         # ---------------------------------------------------------- vocabulary
         # ------------------------------------------------------ transcript review
-        def review_transcript(self, path):
+        def review_transcript(self, path, jump_to=None):
             """Show a transcript; select a wrong word, right-click, correct it."""
             path = Path(path)
             try:
@@ -2181,6 +2181,21 @@ def build_app_class():
             win.protocol("WM_DELETE_WINDOW", close_window)
             win.after(100, win.focus_force)
             win._start_edit, win._save_edit, win._text = start_edit, save_edit, tk_text  # tests
+            if jump_to:
+                # Scroll to the moment and highlight its lines.
+                a, b = jump_to
+                tk_text.tag_configure("jump", background="#2f4f7a")
+                first = None
+                for n, line in enumerate(tk_text.get("1.0", "end").splitlines(), start=1):
+                    m = self.TIME_RE.match(line)
+                    if not m:
+                        continue
+                    ls, le = self._seconds(m.group(1)), self._seconds(m.group(2))
+                    if le > a and ls < b:
+                        tk_text.tag_add("jump", f"{n}.0", f"{n}.end")
+                        first = first or n
+                if first:
+                    win.after(150, lambda: tk_text.see(f"{first}.0"))
 
         # ------------------------------------------------------------- jingles
         TIME_RE = re.compile(r"\[(?:[A-Z]+ )?(\d\d:\d\d:\d\d) → (\d\d:\d\d:\d\d)\]")
@@ -2237,6 +2252,56 @@ def build_app_class():
                                summary=f"{self.describe_length(b0 - a0)} · from the lines you "
                                        "selected")
 
+        def play_clip(self, button, audio_path, a, b):
+            """Play start..end of a recording (Windows' own sound player); the
+            button toggles between Play and Stop."""
+            import winsound
+            if getattr(self, "_playing_button", None) is not None:
+                winsound.PlaySound(None, 0)
+                old = self._playing_button
+                self._playing_button = None
+                try:
+                    old.configure(text="▶ Play")
+                except Exception:
+                    pass
+                if old is button:
+                    return  # it was a Stop
+            button.configure(text="Loading…")
+
+            def work():
+                try:
+                    import tempfile
+                    import wave
+                    import numpy as np
+                    from faster_whisper.audio import decode_audio
+                    audio = decode_audio(str(audio_path))[int(a * 16000):int(b * 16000)]
+                    wav = Path(tempfile.gettempdir()) / "AudioTranscriber-clip.wav"
+                    with wave.open(str(wav), "wb") as w:
+                        w.setnchannels(1)
+                        w.setsampwidth(2)
+                        w.setframerate(16000)
+                        w.writeframes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
+                except Exception as e:
+                    self.ui_calls.put(lambda: (button.configure(text="▶ Play"),
+                                               messagebox.showerror("Play", str(e))))
+                    return
+
+                def start():
+                    winsound.PlaySound(str(wav), winsound.SND_FILENAME | winsound.SND_ASYNC)
+                    self._playing_button = button
+                    button.configure(text="■ Stop")
+
+                    def done():
+                        if getattr(self, "_playing_button", None) is button:
+                            self._playing_button = None
+                            try:
+                                button.configure(text="▶ Play")
+                            except Exception:
+                                pass
+                    self.after(int((b - a) * 1000) + 300, done)
+                self.ui_calls.put(start)
+            threading.Thread(target=work, name="play-clip", daemon=True).start()
+
         @staticmethod
         def guess_kind(seconds):
             return "Song" if seconds > 90 else "Jingle"
@@ -2254,7 +2319,7 @@ def build_app_class():
             return " ".join(words).strip().capitalize() if words else kind
 
         def jingle_dialog(self, parent, audio_path, start_text, end_text, text, after_saved,
-                          summary=""):
+                          summary="", heard_in="", transcript=None):
             """Save a jingle / ad / song. Only the words are asked for; the
             name, type and times are filled in and kept under More options."""
             seconds = self._seconds(end_text) - self._seconds(start_text)
@@ -2268,8 +2333,26 @@ def build_app_class():
             heading = ctk.CTkLabel(dlg, text=f"Save {kind_guess.lower()}", font=font(15, "bold"),
                                    anchor="w")
             heading.grid(row=0, column=0, sticky="w", padx=18, pady=(14, 0))
-            ctk.CTkLabel(dlg, text=summary or self.describe_length(seconds), text_color=GRAY,
-                         font=font(11), anchor="w").grid(row=1, column=0, sticky="w", padx=18)
+            top = ctk.CTkFrame(dlg, fg_color="transparent")
+            top.grid(row=1, column=0, sticky="ew", padx=18)
+            top_text = ctk.CTkFrame(top, fg_color="transparent")
+            buttons = ctk.CTkFrame(top, fg_color="transparent")
+            buttons.pack(side="right")
+            top_text.pack(side="left", fill="x", expand=True)
+            ctk.CTkLabel(top_text, text=summary or self.describe_length(seconds),
+                         text_color=GRAY, font=font(11), anchor="w").pack(fill="x")
+            if heard_in:
+                ctk.CTkLabel(top_text, text=heard_in, text_color=GRAY, font=font(11),
+                             anchor="w", justify="left", wraplength=330).pack(fill="x")
+            a_sec, b_sec = self._seconds(start_text), self._seconds(end_text)
+            play = ghost_button(buttons, "▶ Play", None, width=80, height=28)
+            play.configure(command=lambda: self.play_clip(play, audio_path, a_sec, b_sec))
+            play.pack(side="left")
+            if transcript:
+                ghost_button(buttons, "Open transcript",
+                             lambda: self.review_transcript(transcript, jump_to=(a_sec, b_sec)),
+                             width=120, height=28).pack(side="left", padx=(6, 0))
+            dlg.geometry("600x440")
             ctk.CTkLabel(dlg, text="Correct words", font=font(12, "bold"), anchor="w"
                          ).grid(row=2, column=0, sticky="w", padx=18, pady=(12, 4))
             text_box = ctk.CTkTextbox(dlg, height=110, wrap="word")
@@ -2462,25 +2545,32 @@ def build_app_class():
                     row = ctk.CTkFrame(body, corner_radius=8)
                     row.pack(fill="x", pady=4)
                     save_btn = ctk.CTkButton(row, text="Save...", width=80, height=28)
-                    save_btn.pack(side="right", padx=12)  # first, so it's never squeezed
+                    save_btn.pack(side="right", padx=(6, 12))  # first, so it's never squeezed
+                    play_btn = ghost_button(row, "▶ Play", None, width=80, height=28)
+                    play_btn.pack(side="right")
                     left = ctk.CTkFrame(row, fg_color="transparent")
                     left.pack(side="left", fill="x", expand=True, padx=12, pady=8)
                     title = (f"{self.guess_kind(r['seconds'])}  ·  "
                              f"{self.describe_length(r['seconds'])}  ·  aired {r['count']} times")
                     ctk.CTkLabel(left, text=title, font=font(12, "bold"), anchor="w"
                                  ).pack(fill="x")
-                    excerpt = ""
-                    for p, pa, pb in r["places"]:  # text from any airing that has some
-                        excerpt = self.transcript_excerpt(p, pa, pb)
+                    # Use the airing whose transcript has words (for the text, Play
+                    # and Open transcript); otherwise the first one.
+                    excerpt, chosen = "", r["places"][0]
+                    for place in r["places"]:
+                        excerpt = self.transcript_excerpt(*place)
                         if excerpt:
+                            chosen = place
                             break
+                    play_btn.configure(command=lambda b=play_btn, c=chosen: self.play_clip(
+                        b, Path(c[0]), c[1], c[2]))
                     ctk.CTkLabel(left, text=shorten(excerpt, 110) if excerpt else "No words yet",
                                  font=font(11), anchor="w", justify="left", wraplength=520,
                                  text_color=GRAY if excerpt else ("gray55", "gray50")
                                  ).pack(fill="x")
 
-                    def save(r=r, row=row, excerpt=excerpt):
-                        path, a, b = r["places"][0]
+                    def save(r=r, row=row, excerpt=excerpt, chosen=chosen):
+                        path, a, b = chosen
 
                         def after_saved(label, sa, sb, correct, kind_name):
                             row.destroy()
@@ -2500,11 +2590,15 @@ def build_app_class():
                                 f", and written into {fixed} transcript"
                                 f"{'s' if fixed != 1 else ''}." if fixed else "."))
 
+                        more_places = r["count"] - 1
+                        heard = (f"Heard in {Path(path).stem} at {T.format_timestamp(a)}"
+                                 + (f" (and {more_places} more)" if more_places else ""))
                         self.jingle_dialog(win, Path(path), T.format_timestamp(a),
                                            T.format_timestamp(b), excerpt, after_saved,
                                            summary=f"{self.describe_length(r['seconds'])} · "
                                                    f"aired {r['count']} times · found "
-                                                   "automatically")
+                                                   "automatically",
+                                           heard_in=heard, transcript=self.transcript_for(path))
 
                     save_btn.configure(command=save)
 
