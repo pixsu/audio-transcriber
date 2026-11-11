@@ -17,7 +17,7 @@ with steps to reproduce. You can expect a first reply within a week.
 - Audio files and transcripts never leave your PC (or your shared network
   folder). Transcription runs locally.
 - Internet is used only to download the speech model the first time a model
-  is used (from Hugging Face), and for the daily update check, which reads
+  is used (from Hugging Face), and for the hourly update check, which reads
   public release information from GitHub and sends nothing about you or your
   files. The update check can be turned off in Settings.
 - Original audio files are only read, never modified, moved or deleted.

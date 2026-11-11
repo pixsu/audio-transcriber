@@ -641,7 +641,7 @@ def friendly_error(reason):
 
 UPDATE_URL = "https://api.github.com/repos/pixsu/audio-transcriber/releases/latest"
 RELEASE_DOWNLOAD_PREFIX = "https://github.com/pixsu/audio-transcriber/releases/download/"
-UPDATE_CHECK_EVERY = 24 * 3600
+UPDATE_CHECK_EVERY = 3600  # once an hour (GitHub allows 60 checks/hour per network)
 
 
 def version_tuple(text):
@@ -1529,7 +1529,7 @@ def build_app_class():
                 self.autostart.configure(state="disabled")
             self.switches["check_for_updates"] = self._switch(
                 card, 6, "Check for updates", "check_for_updates",
-                "Once a day, shows a notice when a new version is out.")
+                "Every hour, shows a notice when a new version is out.")
             ctk.CTkFrame(card, height=10, fg_color="transparent").grid(row=8, column=0)
 
             row = ctk.CTkFrame(panel, fg_color="transparent")
@@ -1861,7 +1861,7 @@ def build_app_class():
                 webbrowser.open(url)
 
         def schedule_update_check(self):
-            """Check now (in the background) and again every 24 hours."""
+            """Check now (in the background) and again every hour."""
             if self.config_raw().get("check_for_updates", True):
                 self.check_updates_background()
             self.after(UPDATE_CHECK_EVERY * 1000, self.schedule_update_check)
@@ -1887,8 +1887,14 @@ def build_app_class():
                 dismissed = self.config_raw().get("dismissed_update")
                 if manual or dismissed != info["version"]:
                     self.show_banner()
-                if not manual:
+                if not manual and getattr(self, "_announced_update", None) != info["version"]:
+                    # Say it once per version, also when the window is in the tray.
+                    self._announced_update = info["version"]
                     log.info("Version %s is available", info["version"])
+                    if dismissed != info["version"]:
+                        self.notify("Update available",
+                                    f"Version {info['version']} is ready. Open Audio "
+                                    "Transcriber and click Update now.")
             if manual:
                 if error:
                     messagebox.showwarning("Check for updates", error, parent=self)

@@ -6,6 +6,14 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.19.2] - 2026-11-11
+
+### Changed
+- **Updates are found sooner.** The program checks for a new version every
+  hour (instead of once a day), so you no longer need **Menu → Check for
+  updates**. A Windows notification pops up once per new version, so you
+  see it even when the program is in the tray.
+
 ## [1.19.1] - 2026-11-11
 
 ### Fixed

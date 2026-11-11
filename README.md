@@ -513,9 +513,10 @@ file to keep in the repository.
 
 ## Updates
 
-Once a day the program checks the
+When it starts and then every hour, the program checks the
 [Releases](https://github.com/pixsu/audio-transcriber/releases) page. When
-there is a newer version, a blue notice appears at the top of the window
+there is a newer version, a Windows notification pops up once (useful when
+the program is in the tray) and a blue notice appears at the top of the window
 with **Update now**, **What's new** and **Later** (hides the notice until
 the next version).
 
@@ -525,7 +526,7 @@ it silently. The program closes for a few seconds and reopens on the new
 version, keeping your settings and models. If a file is being transcribed,
 the update waits until it's done (or click **Install now**). Copies run
 from the zip or from source get a **Download** button instead. You can also check any time with
-**Menu → Check for updates**, or turn the daily check off with the
+**Menu → Check for updates**, or turn the automatic check off with the
 **Check for updates** switch in Settings.
 
 The check only reads the public release information; nothing about you or
