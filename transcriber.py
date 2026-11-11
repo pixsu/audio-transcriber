@@ -34,7 +34,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.19.2"
+__version__ = "1.20.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -158,10 +158,10 @@ DEFAULT_CONFIG = {
     "model_size": "small",
     # "auto" = detect the language. Or force one, e.g. "en" or "tl" (Tagalog).
     "language": "auto",
-    "include_timestamps": False,
+    "include_timestamps": True,
     # Put [MUSIC] in front of lines where music or singing dominates (songs,
     # jingles). Everything is still transcribed.
-    "label_music": False,
+    "label_music": True,
     # Names to spell right and fixes ("wrong" -> "right") are kept in
     # .vocabulary.json in the Transcripts folder, shared by every PC using it.
     # Skip silence. Good for speech recordings, but it also throws away
@@ -176,10 +176,12 @@ DEFAULT_CONFIG = {
     # Which waiting file to do next: "newest_first" (fresh recordings jump
     # the queue), "oldest_first" or "name" (alphabetical).
     "order": "newest_first",
-    # "fast" = take the model's single best guess at each step (~35% faster,
-    # same accuracy on clear speech in testing). "accurate" = compare 5
-    # guesses (beam search); can help with noisy audio, music or accents.
-    "speed": "fast",
+    # Always "accurate" (compares 5 guesses at each step). Not shown in the
+    # window; "fast" (one guess, ~35% faster, worse on music and noisy
+    # audio) can still be set here by hand for a very slow PC.
+    "speed": "accurate",
+    # Bumped when a stored setting needs a one-time change on update.
+    "settings_version": 2,
     "poll_interval_seconds": 10,
     # "auto" = GPU if available, else CPU. Or force "cuda" or "cpu".
     "device": "auto",
@@ -315,6 +317,13 @@ def load_config() -> dict:
     keeps working after new settings are added.
     """
     user_config = read_raw_config()
+    if int(user_config.get("settings_version") or 1) < 2:
+        # v1.20: Fast mode was removed from the window; move everyone to
+        # Accurate once (a hand-set "fast" afterwards is respected).
+        user_config["speed"] = "accurate"
+        user_config["settings_version"] = 2
+        save_raw_config(user_config)
+        log.info("Mode set to Accurate (the Fast option has been retired).")
     if user_config.get("word_list") or user_config.get("replacements"):
         move_vocabulary_to_shared(user_config)
         user_config = read_raw_config()

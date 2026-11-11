@@ -6,6 +6,20 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-11-11
+
+### Changed
+- **Simpler settings.** The Mode (Fast / Accurate) switch is gone: the
+  program always uses Accurate, which gives better transcripts on music,
+  noise and accents (about 30% slower than Fast). PCs that were on Fast are
+  moved to Accurate once; `"speed": "fast"` can still be set by hand in
+  config.json for a very slow PC.
+- **Skip silence is hidden while Label music and songs is on**, because it
+  has no effect then (only real dead air is skipped).
+- **New installs start with Add timestamps and Label music and songs on.**
+- First-run setup: **Most accurate** now means Turbo (1.6 GB, recommended,
+  pre-selected) instead of the much slower Large model.
+
 ## [1.19.2] - 2026-11-11
 
 ### Changed

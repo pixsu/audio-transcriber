@@ -234,7 +234,6 @@ with unapplied changes asks whether to apply them.
 
 | In the window | Setting in `config.json` |
 |---|---|
-| Mode: Fast / Accurate | `speed` |
 | Quality | `model_size` |
 | Language | `language` |
 | Order | `order` |
@@ -260,7 +259,7 @@ only in `config.json`; restart the program after editing it by hand.
     "use_filename_hint": true,
     "file_types": [".mp3", ".mp4", ".m4a", ".wav", ".flac", ".ogg", ".opus",
                    ".webm", ".aac", ".wma", ".mkv", ".mov"],
-    "speed": "fast",
+    "speed": "accurate",
     "order": "newest_first",
     "poll_interval_seconds": 10,
     "device": "auto"
@@ -281,7 +280,7 @@ only in `config.json`; restart the program after editing it by hand.
 | `vad_filter` | `true` | Skips silence. Good for speech; **set to `false` for music** (see below). |
 | `use_filename_hint` | `true` | Passes the cleaned file name (e.g. `Artist Song Title`) to the model to help it spell names and titles. |
 | `file_types` | (list above) | File extensions to pick up. |
-| `speed` | `fast` | `fast` takes the model's single best guess at each step (about 35% faster; no accuracy loss on clear speech in testing). `accurate` compares 5 guesses, which can help with noisy audio, music or strong accents. |
+| `speed` | `accurate` | Not shown in the window. `accurate` compares 5 guesses at each step (best on music, noise and accents). `fast` takes one guess (about 35% faster) and can be set here by hand for a very slow PC. |
 | `order` | `newest_first` | Which waiting file to do next: `newest_first` (fresh recordings first), `oldest_first`, or `name` (alphabetical). The folder is re-checked after every file, so a new file goes next even during a long backlog. |
 | `poll_interval_seconds` | `10` | How often to check the input folder for new files. |
 | `device` | `auto` | `auto` uses an NVIDIA GPU if available, otherwise the CPU. Force with `cuda` or `cpu`. |

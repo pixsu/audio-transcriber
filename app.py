@@ -1418,11 +1418,27 @@ def build_app_class():
             sw = ctk.CTkSwitch(card, text=text,
                                command=command or (lambda: self.stage(key, bool(sw.get()))))
             sw.grid(row=row, column=0, columnspan=2, sticky="w", padx=12, pady=(10, 0))
+            sw._hint = None
             if hint:
-                ctk.CTkLabel(card, text=hint, text_color=GRAY, font=font(11), anchor="w",
-                             justify="left", wraplength=290
-                             ).grid(row=row + 1, column=0, columnspan=2, sticky="w", padx=(58, 12))
+                sw._hint = ctk.CTkLabel(card, text=hint, text_color=GRAY, font=font(11),
+                                        anchor="w", justify="left", wraplength=290)
+                sw._hint.grid(row=row + 1, column=0, columnspan=2, sticky="w", padx=(58, 12))
             return sw
+
+        def show_vad_switch(self, visible):
+            """Skip silence does nothing while music labels are on (only real
+            dead air is skipped then), so it's hidden."""
+            sw = self.switches.get("vad_filter")
+            if not sw:
+                return
+            for w in (sw, sw._hint):
+                if w is None:
+                    continue
+                placed = bool(w.grid_info())  # works before the window is drawn
+                if visible and not placed:
+                    w.grid()
+                elif not visible and placed:
+                    w.grid_remove()
 
         def _build_settings(self):
             outer = ctk.CTkFrame(self, corner_radius=12)
@@ -1450,20 +1466,15 @@ def build_app_class():
             panel.pack(fill="both", expand=True, padx=(6, 4), pady=(0, 4))
 
             card = self._section(panel, "Transcription")
-            self.mode = self._field(card, 0, "Mode", lambda p: ctk.CTkSegmentedButton(
-                p, values=list(MODE_CHOICES),
-                command=lambda v: self.stage("speed", MODE_CHOICES[v])),
-                "Fast is right for clear speech. Accurate can help with noisy audio, "
-                "music or strong accents (about 35% slower).")
-            self.model = self._field(card, 2, "Quality", lambda p: Select(
+            self.model = self._field(card, 0, "Quality", lambda p: Select(
                 p, values=list(MODEL_CHOICES),
                 command=lambda v: self.stage("model_size", MODEL_CHOICES[v])),
                 "Bigger is more accurate but slower. A new model is downloaded once.")
-            self.language = self._field(card, 4, "Language", lambda p: Select(
+            self.language = self._field(card, 2, "Language", lambda p: Select(
                 p, values=list(LANGUAGE_CHOICES),
                 command=self.on_language),
                 "Auto-detect handles English, Filipino and Taglish.")
-            ctk.CTkFrame(card, height=8, fg_color="transparent").grid(row=6, column=0)
+            ctk.CTkFrame(card, height=8, fg_color="transparent").grid(row=4, column=0)
 
             card = self._section(panel, "Options")
             self.switches = {
@@ -1600,13 +1611,13 @@ def build_app_class():
 
         def load_settings_into_widgets(self):
             v = self.shown_values()
-            self.mode.set(label_for(MODE_CHOICES, v["speed"]))
             self._set_menu(self.model, MODEL_CHOICES, v["model_size"])
             self._set_menu(self.language, LANGUAGE_CHOICES, v["language"])
             self._set_menu(self.order, ORDER_CHOICES, v["order"])
             self._set_menu(self.device, DEVICE_CHOICES, v["device"])
             for key, sw in self.switches.items():
                 sw.select() if v[key] else sw.deselect()
+            self.show_vad_switch(not v["label_music"])
             self.autostart.select() if v["_autostart"] else self.autostart.deselect()
             for key, lbl in self.folder_labels.items():
                 if key in self.pending:
@@ -1624,6 +1635,8 @@ def build_app_class():
             else:
                 self.pending[key] = value
             self.saved_text.configure(text="")
+            if key == "label_music":
+                self.show_vad_switch(not value)
             if key in self.folder_labels:
                 self.load_settings_into_widgets()
             else:
@@ -3233,9 +3246,9 @@ QUALITY_PRESETS = [
     ("Fast", "small",
      "Quickest. Good for clear speech. About 480 MB download."),
     ("Balanced", "medium",
-     "Recommended. Good for Tagalog, Taglish and English. About 1.5 GB."),
-    ("Most accurate", "large-v3",
-     "Best results, but slow without an NVIDIA graphics card. About 3 GB."),
+     "Good for Tagalog, Taglish and English. About 1.5 GB."),
+    ("Most accurate", "large-v3-turbo",
+     "Recommended. Best for radio: names, ads and songs. About 1.6 GB."),
 ]
 
 
@@ -3248,7 +3261,7 @@ def run_setup_wizard():
     defaults = T.DEFAULT_CONFIG
     choice = {"input_folder": defaults["input_folder"],
               "output_folder": defaults["output_folder"],
-              "model_size": "medium"}
+              "model_size": "large-v3-turbo"}
     result = {}
 
     win = ctk.CTk()
