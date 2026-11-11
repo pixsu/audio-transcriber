@@ -34,7 +34,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.17.0"
+__version__ = "1.18.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -594,7 +594,7 @@ def merge_spans(spans):
         else:
             out.append((a, b))
     return out
-EMPTY_LABEL_SECONDS = 4.0  # shorter pauses between lines aren't labelled
+GAP_LABEL_SECONDS = 3.0  # shorter pauses are joined onto the line before
 
 
 def find_holes(found, clips, min_seconds=None):
@@ -772,12 +772,6 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
     lines = []
     fix_words = make_replacer(config.get("replacements", {}))
     latin_only = config["language"] in LATIN_LANGUAGES
-    pending_gaps = list(gaps)
-
-    def add_gaps(before):
-        while pending_gaps and pending_gaps[0][0] <= before:
-            a, b = pending_gaps.pop(0)
-            lines.append(f"[SILENCE {format_timestamp(a)} → {format_timestamp(b)}]")
 
     def clean(seg):
         text = fix_words(seg.text.strip())
@@ -846,41 +840,74 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
                      len(holes), added)
             found.sort(key=lambda f: f[0])
 
-        # Whatever is still without text gets a line too, so nothing in the
-        # transcript is silently blank: "(instrumental)" for music,
-        # "(unclear speech)" when there's a voice Whisper couldn't make out.
+    # --- one continuous timeline ------------------------------------------
+    # Every line starts where the one before ended. Pauses of 3 seconds or
+    # more get their own line ([SILENCE ...], (instrumental), ...); shorter
+    # ones are joined onto the line before, so the times never jump.
+    entries = []  # (start, end, kind, text)
+    for a, b, text in found:
+        entries.append((a, b, "text", text))
+    for (a, b), (label, saved) in jingle_hits.items():
+        entries.append((a, b, label, " ".join(saved.split())))
+    for a, b in gaps:
+        entries.append((a, b, "SILENCE", ""))
+    entries.sort(key=lambda e: (e[0], e[1]))
+
+    have_audio = np is not None and isinstance(source, np.ndarray)
+    total = len(source) / 16000 if have_audio else (info.duration if info else 0)
+
+    def describe(a, b):
+        """What fills a pause with no line: silence, music or a voice."""
+        if have_audio:
+            clip = source[int(a * 16000):int(b * 16000)]
+            if len(clip) and 20 * np.log10(np.sqrt(np.mean(clip * clip)) + 1e-10) < -50:
+                return "SILENCE", ""
         if music is not None:
-            for a, b in find_holes(found, sound, min_seconds=EMPTY_LABEL_SECONDS):
-                found.append((a, b, music_detect.describe_empty(music, a, b)))
-            found.sort(key=lambda f: f[0])
+            label = music_detect.describe_empty(music, a, b)
+            return ("MUSIC" if label == "(instrumental)" else "text"), label
+        return "text", "(no clear words)"
 
-    for a, b in jingle_hits:
-        found.append((a, b, None))
-    found.sort(key=lambda f: f[0])
-
-    for start, end, text in found:
-        add_gaps(start)
-        seg_start, seg_end = start, end
-        if text is None:  # recognised from the library: its text, as written
-            label, saved = jingle_hits[(start, end)]
-            saved = " ".join(saved.split())
-            if config["include_timestamps"]:
-                lines.append(f"[{label} {format_timestamp(start)} → "
-                             f"{format_timestamp(end)}] {saved}")
-            else:
-                lines.append(f"[{label}] {saved}")
+    timeline = []
+    pos = 0.0
+    for a, b, kind, text in entries:
+        a = max(a, pos)
+        if b <= a:
             continue
-        tag = "MUSIC " if music is not None and (
-            text == "(instrumental)" or music_detect.is_music(music, seg_start, seg_end)) else ""
+        if a - pos >= GAP_LABEL_SECONDS:
+            k, t = describe(pos, a)
+            timeline.append([pos, a, k, t])
+        elif timeline:
+            timeline[-1][1] = a          # tiny pause: close it up
+        else:
+            a = 0.0                      # first line starts at 0:00
+        timeline.append([a, b, kind, text])
+        pos = b
+    if total and total - pos >= GAP_LABEL_SECONDS:
+        k, t = describe(pos, total)
+        timeline.append([pos, total, k, t])
+    elif timeline and total:
+        timeline[-1][1] = max(timeline[-1][1], total)
+
+    # Neighbouring silences become one.
+    merged = []
+    for item in timeline:
+        if merged and item[2] == merged[-1][2] == "SILENCE":
+            merged[-1][1] = item[1]
+        else:
+            merged.append(item)
+
+    for a, b, kind, text in merged:
+        if kind == "text" and music is not None and music_detect.is_music(music, a, b):
+            kind = "MUSIC"
+        label = "" if kind == "text" else kind
         if config["include_timestamps"]:
-            lines.append(f"[{tag}{format_timestamp(seg_start)} → "
-                         f"{format_timestamp(seg_end)}] {text}")
-        elif tag:
-            lines.append(f"[MUSIC] {text}")
+            stamp = f"{format_timestamp(a)} → {format_timestamp(b)}"
+            head = f"[{label} {stamp}]" if label else f"[{stamp}]"
+            lines.append(f"{head} {text}".rstrip())
+        elif label:
+            lines.append(f"[{label}] {text}".rstrip())
         else:
             lines.append(text)
-
-    add_gaps(float("inf"))
 
     # Unique temp name per PC and process, so two PCs can never write into
     # the same temp file on a shared folder.

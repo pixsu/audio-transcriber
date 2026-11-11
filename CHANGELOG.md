@@ -6,6 +6,17 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-11-11
+
+### Changed
+- **No gaps or jumps in the timeline** (with Label music and songs on):
+  every line starts exactly where the one before ended, from 00:00:00 to
+  the end of the file. Pauses of 3 seconds or more get their own line
+  (`[SILENCE …]`, `[MUSIC …] (instrumental)`, `(unclear speech)`); shorter
+  pauses are joined onto the line before.
+- **Save as jingle / ad / song** saves the text as one normal line again
+  (no line-by-line lyrics).
+
 ## [1.17.0] - 2026-11-10
 
 ### Added

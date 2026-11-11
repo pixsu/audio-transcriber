@@ -2135,16 +2135,14 @@ def build_app_class():
                     "The original recording for this transcript isn't in the Inbox any "
                     "more, so its sound can't be saved.", parent=parent)
                 return
-            # Keep each line's time so songs can be saved line by line; drop
-            # labels like MUSIC and lines that are only "(instrumental)".
+            # The words only: no times, labels or "(instrumental)" lines.
             prefill = []
             for l in lines:
-                m = self.TIME_RE.match(l)
-                body = l.split("] ", 1)[-1] if m else l
+                body = l.split("] ", 1)[-1] if self.TIME_RE.match(l) else l
                 if body.startswith("(") and body.endswith(")"):
                     continue
-                prefill.append(f"[{m.group(1)} → {m.group(2)}] {body}" if m else body)
-            text = "\n".join(prefill)
+                prefill.append(body)
+            text = " ".join(prefill)
 
             dlg = ctk.CTkToplevel(parent)
             dlg.title("Save as jingle / ad / song")
@@ -2176,9 +2174,8 @@ def build_app_class():
             ctk.CTkLabel(dlg, text="Correct text (written every time it plays)",
                          font=font(12, "bold"), anchor="w"
                          ).grid(row=5, column=0, columnspan=2, sticky="w", padx=18, pady=(10, 0))
-            ctk.CTkLabel(dlg, text="Fix the words after each [time]. Keep the times to save "
-                                   "it line by line (best for songs), or replace everything "
-                                   "with one paragraph.",
+            ctk.CTkLabel(dlg, text="Type it the way it should appear in the transcript. "
+                                   "It's written as one line, timed from start to end.",
                          text_color=GRAY, font=font(11), anchor="w", justify="left",
                          wraplength=600).grid(row=6, column=0, columnspan=2, sticky="w", padx=18)
             text_box = ctk.CTkTextbox(dlg, height=200, wrap="word")
@@ -2209,8 +2206,7 @@ def build_app_class():
                         ta, tb, tt = timed[-1]
                         timed[-1] = (ta, tb, f"{tt} {l}")
                 correct = " ".join(ANY_TIME.sub(" ", " ".join(raw_lines)).split())
-                if not timed or len(timed) < len(raw_lines) // 2:
-                    timed = None  # written as one paragraph
+                timed = None  # always written as one normal line
                 if not correct:
                     messagebox.showwarning("Save as jingle", "Type the correct text first.",
                                            parent=dlg)
