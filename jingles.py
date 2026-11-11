@@ -38,6 +38,7 @@ MIN_SECONDS = 3.0
 MAX_SECONDS = 600.0       # songs up to 10 minutes
 KINDS = {"jingle": "JINGLE", "ad": "AD", "song": "SONG"}
 FOLDER_NAME = ".jingles"
+PREVIEW_SECONDS = 30      # stored with each item, to play from the list
 
 
 def library_folder(output_folder) -> Path:
@@ -94,6 +95,17 @@ def save_jingle(output_folder, name: str, text: str, audio: np.ndarray,
     folder.mkdir(parents=True, exist_ok=True)
     base = f"{_safe_name(name)}-{int(time.time())}"
     np.save(folder / f"{base}.npy", fp)
+    # A short preview (first 30 s) so it can be played from the list later.
+    try:
+        import wave
+        preview = clip[:PREVIEW_SECONDS * SAMPLE_RATE]
+        with wave.open(str(folder / f"{base}.wav"), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(SAMPLE_RATE)
+            w.writeframes((np.clip(preview, -1, 1) * 32767).astype("<i2").tobytes())
+    except Exception as e:
+        log.warning("Couldn't save the preview: %s", e)
     meta = {"name": name.strip(), "text": text.strip(), "seconds": round(end - start, 2),
             "kind": kind if kind in KINDS else "jingle",
             "created": time.strftime("%Y-%m-%d %H:%M")}
@@ -125,7 +137,9 @@ def load_library(output_folder) -> list:
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             fp = np.load(meta_path.with_suffix(".npy"))
-            items.append(dict(meta, id=meta_path.stem, fp=fp))
+            wav = meta_path.with_suffix(".wav")
+            items.append(dict(meta, id=meta_path.stem, fp=fp,
+                              preview=str(wav) if wav.exists() else None))
         except (OSError, ValueError) as e:
             log.warning("Skipping damaged jingle %s (%s)", meta_path.name, e)
     _cache.update(key=key, items=items)
@@ -134,7 +148,7 @@ def load_library(output_folder) -> list:
 
 def delete_jingle(output_folder, jingle_id: str) -> None:
     folder = library_folder(output_folder)
-    for ext in (".json", ".npy"):
+    for ext in (".json", ".npy", ".wav"):
         try:
             (folder / f"{jingle_id}{ext}").unlink()
         except FileNotFoundError:
@@ -374,3 +388,124 @@ def find_repeats(audio_paths, library=(), progress=None, should_stop=None,
     if progress:
         progress(1.0, "Done")
     return results
+
+
+# --------------------------------------------------------------- exact edges
+
+def decode_window(path, start: float, end: float) -> np.ndarray:
+    """Just start..end seconds of a recording, as 16 kHz mono (much faster
+    than decoding a whole hour)."""
+    import av
+    start = max(0.0, float(start))
+    out, need = [], int((end - start) * SAMPLE_RATE)
+    with av.open(str(path)) as container:
+        stream = container.streams.audio[0]
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
+        try:
+            container.seek(int(max(0.0, start - 1.0) / stream.time_base), stream=stream)
+        except Exception:
+            pass
+        got, first_time = 0, None
+        for frame in container.decode(stream):
+            if frame.time is not None and frame.time + frame.samples / frame.sample_rate < start:
+                continue
+            for rf in resampler.resample(frame) or []:
+                data = rf.to_ndarray().reshape(-1).astype(np.float32) / 32768.0
+                if first_time is None:
+                    first_time = rf.time if rf.time is not None else start
+                out.append(data)
+                got += len(data)
+            if got >= need + int((start - (first_time or start)) * SAMPLE_RATE) + SAMPLE_RATE:
+                break
+    if not out:
+        return np.zeros(0, np.float32)
+    audio = np.concatenate(out)
+    skip = max(0, int(round((start - (first_time or start)) * SAMPLE_RATE)))
+    return audio[skip:skip + need]
+
+
+EDGE_PAD = 8.0         # seconds looked at around the rough edges
+EDGE_MATCH = 0.85      # columns this similar (smoothed over 1 s) are the same audio
+
+
+def refine_places(places, max_airings: int = 6):
+    """Exact start/end for a repeated clip: line up its airings 0.1 s by
+    0.1 s and keep the stretch where they really match. Where the matching
+    audio carries on past the window (e.g. a whole sign-off sequence that's
+    identical every night), the rough edge is kept on that side."""
+    places = list(places)
+    if len(places) < 2:
+        return places
+    ref_path, ra, rb = places[0]
+    r0 = max(0.0, ra - EDGE_PAD)
+    ref_fp = fingerprint(decode_window(ref_path, r0, rb + EDGE_PAD))
+    core_a = int(round((ra - r0) / FRAME_SECONDS))
+    core_b = min(len(ref_fp), int(round((rb - r0) / FRAME_SECONDS)))
+    core = ref_fp[core_a:core_b]
+    if len(core) < 10:
+        return places
+    sims, shifts = [], {}
+    for idx, (path, a, b) in enumerate(places[1:max_airings], start=1):
+        o0 = max(0.0, a - EDGE_PAD)
+        fp = fingerprint(decode_window(path, o0, b + EDGE_PAD))
+        scores = _scores(fp, core)
+        if not len(scores):
+            continue
+        # Only allow a line-up close to where the finder put it (a song's
+        # chorus elsewhere in the window would also match).
+        expect = int(round((a - o0) / FRAME_SECONDS))
+        lo_k, hi_k = max(0, expect - 40), min(len(scores), expect + 41)
+        if lo_k >= hi_k:
+            continue
+        k = lo_k + int(np.argmax(scores[lo_k:hi_k]))
+        if scores[k] < MATCH_SCORE - 0.05:
+            continue
+        shift = k - core_a  # this airing's column = reference column + shift
+        sim = np.full(len(ref_fp), np.nan, np.float32)
+        lo_i, hi_i = max(0, -shift), min(len(ref_fp), len(fp) - shift)
+        if hi_i > lo_i:
+            sim[lo_i:hi_i] = np.einsum("ij,ij->i", ref_fp[lo_i:hi_i], fp[lo_i + shift:hi_i + shift])
+        sims.append(sim)
+        shifts[idx] = (o0, shift)
+    if not sims:
+        return places
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # columns no airing covers
+        sim = np.nanmean(np.vstack(sims), axis=0)
+    smooth = np.convolve(np.nan_to_num(sim, nan=0.0), np.ones(10) / 10, mode="same")
+    mid = (core_a + core_b) // 2
+    lo = hi = mid
+    while lo > 0 and smooth[lo - 1] >= EDGE_MATCH:
+        lo -= 1
+    while hi < len(smooth) - 1 and smooth[hi + 1] >= EDGE_MATCH:
+        hi += 1
+    hi += 1
+    # Ran into the edge of the window: the same audio continues, keep the
+    # finder's edge on that side.
+    if lo <= 12:  # within ~1 s of the window's edge
+        lo = core_a
+    if hi >= len(smooth) - 12:
+        hi = core_b
+    refined = [(ref_path, round(r0 + lo * FRAME_SECONDS, 1), round(r0 + hi * FRAME_SECONDS, 1))]
+    for idx, (path, a, b) in enumerate(places[1:], start=1):
+        if idx in shifts:
+            o0, shift = shifts[idx]
+            refined.append((path, round(o0 + (lo + shift) * FRAME_SECONDS, 1),
+                            round(o0 + (hi + shift) * FRAME_SECONDS, 1)))
+        else:  # not lined up: move it by the same amount as the reference
+            refined.append((path, round(a + (refined[0][1] - ra), 1),
+                            round(a + (refined[0][1] - ra) + (refined[0][2] - refined[0][1]), 1)))
+    return refined
+
+
+def update_text(output_folder, jingle_id: str, text: str) -> None:
+    """Change the words of a saved item."""
+    path = library_folder(output_folder) / f"{jingle_id}.json"
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    meta["text"] = text.strip()
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+    _cache.clear()

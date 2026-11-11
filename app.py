@@ -2196,6 +2196,7 @@ def build_app_class():
                         first = first or n
                 if first:
                     win.after(150, lambda: tk_text.see(f"{first}.0"))
+            return win
 
         # ------------------------------------------------------------- jingles
         TIME_RE = re.compile(r"\[(?:[A-Z]+ )?(\d\d:\d\d:\d\d) → (\d\d:\d\d:\d\d)\]")
@@ -2274,7 +2275,12 @@ def build_app_class():
                     import wave
                     import numpy as np
                     from faster_whisper.audio import decode_audio
-                    audio = decode_audio(str(audio_path))[int(a * 16000):int(b * 16000)]
+                    import jingles
+                    if str(audio_path).lower().endswith(".wav") and a == 0 and \
+                            Path(audio_path).parent.name == jingles.FOLDER_NAME:
+                        audio = decode_audio(str(audio_path))[:int(b * 16000)]
+                    else:
+                        audio = jingles.decode_window(audio_path, a, b)
                     wav = Path(tempfile.gettempdir()) / "AudioTranscriber-clip.wav"
                     with wave.open(str(wav), "wb") as w:
                         w.setnchannels(1)
@@ -2302,6 +2308,23 @@ def build_app_class():
                 self.ui_calls.put(start)
             threading.Thread(target=work, name="play-clip", daemon=True).start()
 
+        def context_lines(self, transcript, a, b, around=20):
+            """Transcript lines from `around` s before to after a..b, each
+            with whether it's part of the clip."""
+            out = []
+            try:
+                lines = Path(transcript).read_text(encoding="utf-8").splitlines()
+            except OSError:
+                return out
+            for line in lines:
+                m = self.TIME_RE.match(line)
+                if not m:
+                    continue
+                ls, le = self._seconds(m.group(1)), self._seconds(m.group(2))
+                if le >= a - around and ls <= b + around:
+                    out.append((line, le > a and ls < b))
+            return out
+
         @staticmethod
         def guess_kind(seconds):
             return "Song" if seconds > 90 else "Jingle"
@@ -2319,7 +2342,7 @@ def build_app_class():
             return " ".join(words).strip().capitalize() if words else kind
 
         def jingle_dialog(self, parent, audio_path, start_text, end_text, text, after_saved,
-                          summary="", heard_in="", transcript=None):
+                          summary="", heard_in="", transcript=None, exact=None):
             """Save a jingle / ad / song. Only the words are asked for; the
             name, type and times are filled in and kept under More options."""
             seconds = self._seconds(end_text) - self._seconds(start_text)
@@ -2349,16 +2372,40 @@ def build_app_class():
             play.configure(command=lambda: self.play_clip(play, audio_path, a_sec, b_sec))
             play.pack(side="left")
             if transcript:
-                ghost_button(buttons, "Open transcript",
-                             lambda: self.review_transcript(transcript, jump_to=(a_sec, b_sec)),
-                             width=120, height=28).pack(side="left", padx=(6, 0))
-            dlg.geometry("600x440")
+                def open_full():
+                    # Let go of the window lock first, or the transcript would
+                    # open behind this window and not respond.
+                    try:
+                        dlg.grab_release()
+                    except Exception:
+                        pass
+                    v = self.review_transcript(transcript, jump_to=(a_sec, b_sec))
+                    if v is not None:
+                        v.lift()
+                        v.attributes("-topmost", True)
+                        v.after(400, lambda: v.attributes("-topmost", False))
+                        v.focus_force()
+                ghost_button(buttons, "Open full transcript", open_full,
+                             width=140, height=28).pack(side="left", padx=(6, 0))
+            # What was said around it, with the clip itself highlighted.
+            context = self.context_lines(transcript, a_sec, b_sec) if transcript else []
+            if context:
+                ctx = ctk.CTkTextbox(dlg, height=96, wrap="none", font=ctk.CTkFont(
+                    family="Consolas", size=11))
+                ctx.grid(row=2, column=0, sticky="ew", padx=18, pady=(8, 0))
+                ctx._textbox.tag_configure("clip", background="#2f4f7a")
+                for line, inside in context:
+                    ctx.insert("end", line + "\n", "clip" if inside else "")
+                first_inside = next((n for n, (_, i) in enumerate(context, 1) if i), 1)
+                ctx.after(100, lambda: ctx._textbox.see(f"{max(1, first_inside - 1)}.0"))
+                ctx.configure(state="disabled")
+            dlg.geometry("640x560" if context else "600x440")
             ctk.CTkLabel(dlg, text="Correct words", font=font(12, "bold"), anchor="w"
-                         ).grid(row=2, column=0, sticky="w", padx=18, pady=(12, 4))
+                         ).grid(row=3, column=0, sticky="w", padx=18, pady=(12, 4))
             text_box = ctk.CTkTextbox(dlg, height=110, wrap="word")
             text_box.insert("1.0", text)
-            text_box.grid(row=3, column=0, sticky="nsew", padx=18)
-            dlg.grid_rowconfigure(3, weight=1)
+            text_box.grid(row=4, column=0, sticky="nsew", padx=18)
+            dlg.grid_rowconfigure(4, weight=1)
             text_box.after(150, text_box.focus_set)
 
             # More options (hidden until asked for)
@@ -2383,18 +2430,18 @@ def build_app_class():
                 fields[label] = w
             toggle = ctk.CTkLabel(dlg, text="▸ More options", text_color=BLUE, font=font(11),
                                   anchor="w", cursor="hand2")
-            toggle.grid(row=4, column=0, sticky="w", padx=18, pady=(8, 0))
+            toggle.grid(row=5, column=0, sticky="w", padx=18, pady=(8, 0))
 
             def flip(event=None):
                 if more.grid_info():
                     more.grid_remove()
                     toggle.configure(text="▸ More options")
                 else:
-                    more.grid(row=5, column=0, sticky="ew", padx=18, pady=(6, 0))
+                    more.grid(row=6, column=0, sticky="ew", padx=18, pady=(6, 0))
                     toggle.configure(text="▾ Fewer options")
             toggle.bind("<Button-1>", flip)
             bar = ctk.CTkFrame(dlg, fg_color="transparent")
-            bar.grid(row=6, column=0, sticky="e", padx=18, pady=14)
+            bar.grid(row=7, column=0, sticky="e", padx=18, pady=14)
 
             def save():
                 correct = " ".join(text_box.get("1.0", "end").split())
@@ -2404,6 +2451,11 @@ def build_app_class():
                 try:
                     a = self._seconds(fields["Starts"].get().strip())
                     b = self._seconds(fields["Ends"].get().strip())
+                    # Keep the exact (sub-second) times unless they were changed.
+                    if exact and fields["Starts"].get().strip() == start_text:
+                        a = exact[0]
+                    if exact and fields["Ends"].get().strip() == end_text:
+                        b = exact[1]
                 except ValueError:
                     if not more.grid_info():
                         flip()
@@ -2562,20 +2614,50 @@ def build_app_class():
                         if excerpt:
                             chosen = place
                             break
-                    play_btn.configure(command=lambda b=play_btn, c=chosen: self.play_clip(
-                        b, Path(c[0]), c[1], c[2]))
+                    chosen_index = r["places"].index(chosen)
+
+                    def with_exact(then, r=r, button=None):
+                        """Work out the exact start/end once (lining up the
+                        airings), then carry on."""
+                        if "exact" in r:
+                            then()
+                            return
+                        if button is not None:
+                            button.configure(text="Checking…")
+
+                        def job():
+                            try:
+                                r["exact"] = jingles.refine_places(r["places"])
+                            except Exception as e:
+                                log.warning("Couldn't find exact edges: %s", e)
+                                r["exact"] = list(r["places"])
+                            self.ui_calls.put(then)
+                        threading.Thread(target=job, daemon=True).start()
+
+                    def play(b=play_btn, r=r, i=chosen_index, with_exact=with_exact):
+                        def go():
+                            b.configure(text="▶ Play")
+                            p, pa, pb = r["exact"][i]
+                            self.play_clip(b, Path(p), pa, pb)
+                        with_exact(go, button=b)
+                    play_btn.configure(command=play)
                     ctk.CTkLabel(left, text=shorten(excerpt, 110) if excerpt else "No words yet",
                                  font=font(11), anchor="w", justify="left", wraplength=520,
                                  text_color=GRAY if excerpt else ("gray55", "gray50")
                                  ).pack(fill="x")
 
-                    def save(r=r, row=row, excerpt=excerpt, chosen=chosen):
-                        path, a, b = chosen
+                    def save(r=r, row=row, excerpt=excerpt, i=chosen_index, with_exact=with_exact,
+                             button=save_btn):
+                        with_exact(lambda: (button.configure(text="Save..."),
+                                            open_save(r, row, excerpt, i)), button=button)
+
+                    def open_save(r, row, excerpt, i):
+                        path, a, b = r["exact"][i]
 
                         def after_saved(label, sa, sb, correct, kind_name):
                             row.destroy()
                             fixed = 0
-                            for p, pa, pb in r["places"]:
+                            for p, pa, pb in r["exact"]:
                                 tp = self.transcript_for(p)
                                 if tp:
                                     shift = sa - a  # keep any trimming of the times
@@ -2595,10 +2677,11 @@ def build_app_class():
                                  + (f" (and {more_places} more)" if more_places else ""))
                         self.jingle_dialog(win, Path(path), T.format_timestamp(a),
                                            T.format_timestamp(b), excerpt, after_saved,
-                                           summary=f"{self.describe_length(r['seconds'])} · "
+                                           summary=f"{self.describe_length(b - a)} · "
                                                    f"aired {r['count']} times · found "
                                                    "automatically",
-                                           heard_in=heard, transcript=self.transcript_for(path))
+                                           heard_in=heard, transcript=self.transcript_for(path),
+                                           exact=(a, b))
 
                     save_btn.configure(command=save)
 
@@ -2634,17 +2717,49 @@ def build_app_class():
                 f.write("\n".join(new))
             os.replace(tmp, path)
 
+        def edit_saved_words(self, parent, item, refresh):
+            """Fix the words of a saved jingle / ad / song."""
+            import jingles
+            dlg = ctk.CTkToplevel(parent)
+            dlg.title("Edit words")
+            dlg.geometry("520x260")
+            dlg.transient(parent)
+            dlg.after(100, dlg.grab_set)
+            ctk.CTkLabel(dlg, text=item.get("name", ""), font=font(14, "bold"), anchor="w"
+                         ).pack(fill="x", padx=18, pady=(14, 6))
+            box = ctk.CTkTextbox(dlg, height=110, wrap="word")
+            box.insert("1.0", item.get("text", ""))
+            box.pack(fill="both", expand=True, padx=18)
+            bar = ctk.CTkFrame(dlg, fg_color="transparent")
+            bar.pack(fill="x", padx=18, pady=12)
+
+            def save():
+                words = " ".join(box.get("1.0", "end").split())
+                if not words:
+                    return
+                try:
+                    jingles.update_text(self.output_dir(), item["id"], words)
+                except OSError as e:
+                    messagebox.showerror("Edit words", str(e), parent=dlg)
+                    return
+                dlg.destroy()
+                refresh()
+            ghost_button(bar, "Cancel", dlg.destroy, width=80, height=30).pack(side="right")
+            ctk.CTkButton(bar, text="Save", width=90, height=30, command=save
+                          ).pack(side="right", padx=(0, 8))
+            ctk.CTkLabel(bar, text="Used for new files from now on.", text_color=GRAY,
+                         font=font(11)).pack(side="left")
+
         def manage_jingles(self):
             import jingles
             win = ctk.CTkToplevel(self)
             win.title("Jingles, ads and songs")
-            win.geometry("620x480")
+            win.geometry("720x520")
             win.transient(self)
             ctk.CTkLabel(win, text="Saved jingles, ads and songs", font=font(14, "bold"), anchor="w"
                          ).pack(fill="x", padx=18, pady=(14, 0))
             ctk.CTkLabel(win, text="Shared by every PC that uses this Transcripts folder. "
-                                   "To add one: open a transcript, select the jingle's lines, "
-                                   "right-click → Save as jingle.",
+                                   "To add more, use Find repeats.",
                          text_color=GRAY, font=font(11), anchor="w", justify="left",
                          wraplength=580).pack(fill="x", padx=18, pady=(0, 8))
             body = ctk.CTkScrollableFrame(win)
@@ -2659,6 +2774,9 @@ def build_app_class():
                 for j in items:
                     row = ctk.CTkFrame(body, corner_radius=8)
                     row.pack(fill="x", pady=4)
+                    # Buttons first, so long text never squeezes them.
+                    btns = ctk.CTkFrame(row, fg_color="transparent")
+                    btns.pack(side="right", padx=(6, 12))
                     info = ctk.CTkFrame(row, fg_color="transparent")
                     info.pack(side="left", fill="x", expand=True, padx=12, pady=8)
                     kind_label = {"song": "Song", "ad": "Ad"}.get(j.get("kind"), "Jingle")
@@ -2667,8 +2785,9 @@ def build_app_class():
                     ctk.CTkLabel(info, text=f"{j['name']}  ·  {kind_label}  ·  "
                                             f"{j.get('seconds', 0):.0f} s{extra}",
                                  font=font(12, "bold"), anchor="w").pack(fill="x")
-                    ctk.CTkLabel(info, text=shorten(j.get("text", ""), 90), text_color=GRAY,
-                                 font=font(11), anchor="w").pack(fill="x")
+                    ctk.CTkLabel(info, text=shorten(j.get("text", ""), 160), text_color=GRAY,
+                                 font=font(11), anchor="w", justify="left",
+                                 wraplength=380).pack(fill="x")
 
                     def remove(jid=j["id"], label=j["name"]):
                         if messagebox.askyesno("Delete jingle",
@@ -2677,7 +2796,16 @@ def build_app_class():
                             jingles.delete_jingle(self.output_dir(), jid)
                             fill()
                             self.refresh_vocab_summary()
-                    ghost_button(row, "Delete", remove, width=70).pack(side="right", padx=12)
+                    def edit(j=j):
+                        self.edit_saved_words(win, j, fill)
+                    if j.get("preview"):
+                        pb = ghost_button(btns, "▶ Play", None, width=70)
+                        pb.configure(command=lambda b=pb, j=j: self.play_clip(
+                            b, Path(j["preview"]), 0, min(float(j.get("seconds", 30)),
+                                                          jingles.PREVIEW_SECONDS)))
+                        pb.pack(side="left", padx=(0, 6))
+                    ghost_button(btns, "Edit words", edit, width=90).pack(side="left", padx=(0, 6))
+                    ghost_button(btns, "Delete", remove, width=70).pack(side="left")
             fill()
             win.bind("<Escape>", lambda e: win.destroy())
 

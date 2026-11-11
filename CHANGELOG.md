@@ -6,6 +6,25 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.24.0] - 2026-11-11
+
+### Fixed
+- **Exact start and end for repeated clips.** Before Play or Save, Find
+  repeats lines up the airings 0.1 s by 0.1 s and trims to where they really
+  match, so Play plays the actual jingle and the times written into the
+  transcripts are right for every airing (not rounded to whole seconds).
+- **Open full transcript always appears in front** and responds. Before, it
+  could open behind the save window, which kept it locked.
+- **Jingles, ads and songs list:** buttons are no longer squeezed by long
+  text, and the text wraps.
+
+### Added
+- The save window shows the transcript lines around the clip, with the clip
+  highlighted, so you can see what plays before and after it.
+- Saved items have **▶ Play** (a 30-second preview stored with each one)
+  and **Edit words** in the Jingles, ads and songs list.
+- Play starts quickly: only the clip is read, not the whole recording.
+
 ## [1.23.0] - 2026-11-11
 
 ### Added
