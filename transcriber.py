@@ -34,7 +34,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.18.1"
+__version__ = "1.19.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -162,12 +162,8 @@ DEFAULT_CONFIG = {
     # Put [MUSIC] in front of lines where music or singing dominates (songs,
     # jingles). Everything is still transcribed.
     "label_music": False,
-    # Names and words to spell correctly (stations, hosts, sponsors, places).
-    # Given to Whisper as hints.
-    "word_list": [],
-    # Fixes applied to every transcript line: {"wrong": "right"}. Whole
-    # words, any capitalisation.
-    "replacements": {},
+    # Names to spell right and fixes ("wrong" -> "right") are kept in
+    # .vocabulary.json in the Transcripts folder, shared by every PC using it.
     # Skip silence. Good for speech recordings, but it also throws away
     # singing over music - set to false for songs.
     "vad_filter": True,
@@ -229,6 +225,89 @@ def update_config(changes: dict) -> None:
     save_raw_config(raw)
 
 
+# --- shared vocabulary ------------------------------------------------------
+# Names and fixes live in a hidden file in the Transcripts folder, so every PC
+# that shares that folder uses (and adds to) the same lists.
+VOCAB_FILE = ".vocabulary.json"
+
+
+def _clean_words(words) -> list:
+    if isinstance(words, str):
+        words = words.replace("\n", ",").split(",")
+    out, seen = [], set()
+    for w in words or []:
+        w = str(w).strip()
+        if w and w.lower() not in seen:
+            seen.add(w.lower())
+            out.append(w)
+    return out
+
+
+def _clean_fixes(fixes) -> dict:
+    if not isinstance(fixes, dict):
+        return {}
+    return {str(k).strip(): str(v).strip() for k, v in fixes.items() if str(k).strip()}
+
+
+def read_vocabulary(output_folder) -> dict:
+    """{"word_list": [...], "replacements": {...}} from the shared file
+    (empty if it doesn't exist or can't be read)."""
+    try:
+        with open(Path(output_folder) / VOCAB_FILE, encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    return {"word_list": _clean_words(data.get("word_list")),
+            "replacements": _clean_fixes(data.get("replacements"))}
+
+
+def write_vocabulary(output_folder, word_list, replacements) -> None:
+    """Save the shared lists (temp file + rename, so it's never half-written)."""
+    folder = Path(output_folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / VOCAB_FILE
+    tmp = path.with_name(f"{VOCAB_FILE}.{HOSTNAME}.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"word_list": _clean_words(word_list),
+                   "replacements": _clean_fixes(replacements)},
+                  f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
+def add_fix(output_folder, wrong: str, right: str) -> None:
+    """Add one fix, re-reading the file first so another PC's latest
+    changes aren't lost."""
+    vocab = read_vocabulary(output_folder)
+    vocab["replacements"][wrong] = right
+    write_vocabulary(output_folder, vocab["word_list"], vocab["replacements"])
+
+
+def move_vocabulary_to_shared(raw: dict) -> None:
+    """Older versions kept names and fixes in this PC's config.json. Merge
+    them into the shared file once and remove them from config.json."""
+    words = _clean_words(raw.get("word_list"))
+    fixes = _clean_fixes(raw.get("replacements"))
+    if not words and not fixes:
+        return
+    folder = raw.get("output_folder") or DEFAULT_CONFIG["output_folder"]
+    try:
+        shared = read_vocabulary(folder)
+        merged_words = _clean_words(shared["word_list"] + words)
+        merged_fixes = dict(fixes)
+        merged_fixes.update(shared["replacements"])  # the shared list wins on clashes
+        write_vocabulary(folder, merged_words, merged_fixes)
+    except OSError as e:
+        log.warning("Couldn't move names and fixes to the shared Transcripts folder yet "
+                    "(%s); will try again next time.", e)
+        return
+    raw = dict(raw)
+    raw.pop("word_list", None)
+    raw.pop("replacements", None)
+    save_raw_config(raw)
+    log.info("Moved %d name(s) and %d fix(es) into the shared vocabulary in %s",
+             len(words), len(fixes), folder)
+
+
 def load_config() -> dict:
     """Load config.json, creating it with defaults if it doesn't exist.
 
@@ -236,6 +315,9 @@ def load_config() -> dict:
     keeps working after new settings are added.
     """
     user_config = read_raw_config()
+    if user_config.get("word_list") or user_config.get("replacements"):
+        move_vocabulary_to_shared(user_config)
+        user_config = read_raw_config()
 
     config = dict(DEFAULT_CONFIG)
     config.update(user_config)
@@ -271,15 +353,14 @@ def load_config() -> dict:
     config["include_timestamps"] = bool(config["include_timestamps"])
     config["vad_filter"] = bool(config["vad_filter"])
     config["label_music"] = bool(config.get("label_music"))
-    words = config.get("word_list") or []
-    if isinstance(words, str):
-        words = words.replace("\n", ",").split(",")
-    config["word_list"] = [str(w).strip() for w in words if str(w).strip()]
-    repl = config.get("replacements") or {}
-    if not isinstance(repl, dict):
-        repl = {}
-    config["replacements"] = {str(k).strip(): str(v).strip() for k, v in repl.items()
-                              if str(k).strip()}
+    # Names and fixes come from the shared file in the Transcripts folder.
+    # If this PC's old lists couldn't be moved there yet (folder not
+    # reachable), keep using them meanwhile.
+    shared = read_vocabulary(config["output_folder"])
+    local_fixes = _clean_fixes(user_config.get("replacements"))
+    local_fixes.update(shared["replacements"])
+    config["word_list"] = _clean_words(shared["word_list"] + _clean_words(user_config.get("word_list")))
+    config["replacements"] = local_fixes
     config["use_filename_hint"] = bool(config["use_filename_hint"])
     # Normalise to lowercase ".ext" so "MP4" or "mp4" both work.
     config["file_types"] = {
@@ -668,6 +749,7 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
     end. That way a half-finished transcript (e.g. if the program is closed)
     never looks like a finished one.
     """
+    config = dict(config, **read_vocabulary(config["output_folder"]))
     hint = filename_hint(audio_path) if config["use_filename_hint"] else None
     if hint:
         log.info('   Using hint from file name: "%s"', hint)

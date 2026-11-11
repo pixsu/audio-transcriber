@@ -6,6 +6,17 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-11-11
+
+### Changed
+- **Names and fixes are shared between PCs.** They're now kept in a hidden
+  `.vocabulary.json` in the Transcripts folder (next to the jingle
+  library), so every PC using that folder shares one list: a fix added on
+  one PC is used by all of them from their next file. Each PC's existing
+  lists are moved there automatically the first time this version runs
+  (merged, nothing lost). If the folder can't be reached, a PC keeps using
+  its own lists until it can.
+
 ## [1.18.1] - 2026-11-11
 
 ### Changed

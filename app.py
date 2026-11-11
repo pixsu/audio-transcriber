@@ -2364,10 +2364,7 @@ def build_app_class():
             parts = [f'"{wrong}" → "{right}": {here} line{"s" if here != 1 else ""} fixed here']
             if always:
                 try:
-                    raw = self.config_raw()
-                    fixes = dict(raw.get("replacements") or {})
-                    fixes[wrong] = right
-                    T.update_config({"replacements": fixes})
+                    T.add_fix(self.output_dir(), wrong, right)
                     self.engine.settings_changed()
                     self.refresh_vocab_summary()
                     parts.append("added to Fixes for future transcripts")
@@ -2403,11 +2400,8 @@ def build_app_class():
             reload(highlight=right)
 
         def refresh_vocab_summary(self):
-            c = self.config_raw()
-            words = c.get("word_list") or []
-            if isinstance(words, str):
-                words = [w for w in words.replace("\n", ",").split(",") if w.strip()]
-            fixes = c.get("replacements") or {}
+            vocab = T.read_vocabulary(self.output_dir())
+            words, fixes = vocab["word_list"], vocab["replacements"]
             if not words and not fixes:
                 text = ("Spell station, host, sponsor and place names right, and fix "
                         "mistakes that keep coming back.")
@@ -2428,11 +2422,8 @@ def build_app_class():
 
         def edit_vocabulary(self):
             """A window with two lists: names to spell right, and fixes."""
-            c = self.config_raw()
-            words = c.get("word_list") or []
-            if isinstance(words, str):
-                words = [w.strip() for w in words.replace("\n", ",").split(",") if w.strip()]
-            fixes = c.get("replacements") or {}
+            vocab = T.read_vocabulary(self.output_dir())
+            words, fixes = vocab["word_list"], vocab["replacements"]
 
             win = ctk.CTkToplevel(self)
             win.title("Vocabulary")
@@ -2462,7 +2453,8 @@ def build_app_class():
             fix_box.grid(row=2, column=1, sticky="nsew", padx=(8, 18), pady=8)
             fix_box.insert("1.0", "\n".join(f"{k} = {v}" for k, v in fixes.items()))
 
-            note = ctk.CTkLabel(win, text="Applies to files transcribed from now on.",
+            note = ctk.CTkLabel(win, text="Shared by every PC using this Transcripts folder. "
+                                          "Applies to files transcribed from now on.",
                                 text_color=GRAY, font=font(11), anchor="w")
             note.grid(row=3, column=0, sticky="w", padx=18)
             bar = ctk.CTkFrame(win, fg_color="transparent")
@@ -2487,7 +2479,7 @@ def build_app_class():
                         + "\n".join(bad[:8]), parent=win)
                     return
                 try:
-                    T.update_config({"word_list": new_words, "replacements": new_fixes})
+                    T.write_vocabulary(self.output_dir(), new_words, new_fixes)
                 except Exception as e:
                     messagebox.showerror("Vocabulary", f"Couldn't save:\n{e}", parent=win)
                     return
