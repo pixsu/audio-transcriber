@@ -2390,16 +2390,27 @@ def build_app_class():
             # What was said around it, with the clip itself highlighted.
             context = self.context_lines(transcript, a_sec, b_sec) if transcript else []
             if context:
-                ctx = ctk.CTkTextbox(dlg, height=96, wrap="none", font=ctk.CTkFont(
-                    family="Consolas", size=11))
+                # A short, fixed preview (no scrolling): 2 lines before, the
+                # clip's lines (long clips shortened), 2 lines after.
+                inside = [n for n, (_, i) in enumerate(context) if i]
+                if inside:
+                    first, last = inside[0], inside[-1]
+                    clip = context[first:last + 1]
+                    if len(clip) > 6:
+                        clip = (clip[:3] + [(f"      … {len(clip) - 5} more lines …", True)]
+                                + clip[-2:])
+                    rows = context[max(0, first - 2):first] + clip + context[last + 1:last + 3]
+                else:
+                    rows = context[:6]
+                ctx = ctk.CTkFrame(dlg, corner_radius=6, fg_color=("gray92", "gray14"))
                 ctx.grid(row=2, column=0, sticky="ew", padx=18, pady=(8, 0))
-                ctx._textbox.tag_configure("clip", background="#2f4f7a")
-                for line, inside in context:
-                    ctx.insert("end", line + "\n", "clip" if inside else "")
-                first_inside = next((n for n, (_, i) in enumerate(context, 1) if i), 1)
-                ctx.after(100, lambda: ctx._textbox.see(f"{max(1, first_inside - 1)}.0"))
-                ctx.configure(state="disabled")
-            dlg.geometry("640x560" if context else "600x440")
+                mono = ctk.CTkFont(family="Consolas", size=11)
+                for line, in_clip in rows:
+                    ctk.CTkLabel(ctx, text=shorten(line, 96), font=mono, anchor="w", height=18,
+                                 fg_color=("#cfe0f5", "#2f4f7a") if in_clip else "transparent",
+                                 corner_radius=0).pack(fill="x", padx=6)
+                ctk.CTkFrame(ctx, height=4, fg_color="transparent").pack()
+            dlg.geometry("640x600" if context else "600x440")
             ctk.CTkLabel(dlg, text="Correct words", font=font(12, "bold"), anchor="w"
                          ).grid(row=3, column=0, sticky="w", padx=18, pady=(12, 4))
             text_box = ctk.CTkTextbox(dlg, height=110, wrap="word")

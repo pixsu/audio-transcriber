@@ -6,6 +6,13 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.24.1] - 2026-11-11
+
+### Fixed
+- Save window: the transcript lines around the clip are now a short fixed
+  preview (2 lines before, the clip — long ones shortened — and 2 after)
+  instead of a small scrolling box that redrew badly when scrolled.
+
 ## [1.24.0] - 2026-11-11
 
 ### Fixed
