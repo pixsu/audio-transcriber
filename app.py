@@ -1295,6 +1295,7 @@ def build_app_class():
                 self.withdraw()
             self.after(200, self.tick)
             self.after(8000, self.schedule_update_check)
+            self.after(120 * 1000, self.schedule_repeat_check)  # quietly, after start-up
             threading.Thread(target=clean_old_updates, name="cleanup", daemon=True).start()
 
         # =================================================================
@@ -1563,8 +1564,9 @@ def build_app_class():
                          ).grid(row=2, column=0, sticky="w", padx=12, pady=(10, 0))
             jingle_buttons = ctk.CTkFrame(card, fg_color="transparent")
             jingle_buttons.grid(row=2, column=1, sticky="e", padx=12, pady=(10, 0))
-            ghost_button(jingle_buttons, "Find repeats...", self.find_repeats, width=110
-                         ).pack(side="left", padx=(0, 6))
+            self.find_repeats_btn = ghost_button(jingle_buttons, "Find repeats...",
+                                                 self.find_repeats, width=130)
+            self.find_repeats_btn.pack(side="left", padx=(0, 6))
             ghost_button(jingle_buttons, "Manage...", self.manage_jingles, width=80
                          ).pack(side="left")
             self.jingle_summary = ctk.CTkLabel(card, text="", anchor="w", justify="left",
@@ -2501,7 +2503,277 @@ def build_app_class():
             dlg._text, dlg._save, dlg._flip = text_box, save, flip  # (for tests)
 
         # ----------------------------------------------------- repeat finder
-        REPEAT_FILES = 30   # newest recordings scanned
+        REPEAT_HISTORY = 200          # newest stored recordings compared
+        REPEAT_CHECK_EVERY = 30 * 60  # seconds between automatic checks
+
+        def audio_for(self, name):
+            """The original recording, if it's still in the Inbox."""
+            inbox = self.engine.inbox
+            if inbox:
+                p = Path(inbox) / name
+                if p.exists():
+                    return p
+            return None
+
+        def inbox_audio(self):
+            types = {e.lower() for e in self.config_raw().get("file_types", [])} or {
+                ".mp3", ".wav", ".m4a"}
+            try:
+                return sorted((p for p in self.engine.inbox.iterdir()
+                               if p.is_file() and p.suffix.lower() in types),
+                              key=lambda p: p.stat().st_mtime, reverse=True)
+            except (OSError, AttributeError):
+                return []
+
+        def compute_repeats(self, backfill=False, progress=None, should_stop=None):
+            """Repeats across all stored recordings that aren't saved yet.
+            backfill: first give recordings in the Inbox that have no stored
+            sound codes yet (older ones) their codes."""
+            import jingles
+            out = self.output_dir()
+            if backfill:
+                missing = [p for p in self.inbox_audio()[:self.REPEAT_HISTORY]
+                           if not jingles.has_codes(out, p.name)]
+                for n, p in enumerate(missing):
+                    if should_stop:
+                        should_stop()
+                    if progress:
+                        progress(n / max(1, len(missing)) * 0.8,
+                                 f"Reading older recordings for the first time "
+                                 f"({n + 1} of {len(missing)})…")
+                    try:
+                        jingles.store_codes(out, p)
+                    except Exception as e:
+                        log.warning("Couldn't read %s: %s", p.name, e)
+            if progress:
+                progress(0.85, "Comparing recordings…")
+            entries = jingles.load_codes(out, limit=self.REPEAT_HISTORY)
+            results = jingles.find_repeats(entries, should_stop=should_stop)
+            library = jingles.load_library(out)
+            fresh = [r for r in results[:80]
+                     if not jingles.known_in_library(r, self.audio_for, library)]
+            return fresh, len(entries)
+
+        def schedule_repeat_check(self):
+            """Look for new repeats in the background every 30 minutes."""
+            if not getattr(self, "_repeat_busy", False) and not self.quitting:
+                self._repeat_busy = True
+
+                def job():
+                    try:
+                        results, _ = self.compute_repeats()
+                    except Exception as e:
+                        log.debug("Automatic repeat check failed: %s", e)
+                        results = None
+                    self.ui_calls.put(lambda: self.on_repeat_check(results))
+                threading.Thread(target=job, name="repeat-check", daemon=True).start()
+            self.after(self.REPEAT_CHECK_EVERY * 1000, self.schedule_repeat_check)
+
+        def on_repeat_check(self, results):
+            self._repeat_busy = False
+            if results is None:
+                return
+            self._repeat_cache = (time.time(), results)
+            self.update_repeat_badge()
+            n = len(results)
+            if n > getattr(self, "_repeat_announced", 0):
+                self.notify("Repeated jingles found",
+                            f"{n} jingle(s), ad(s) or song(s) aired more than once. Open "
+                            "Settings → Vocabulary → Find repeats to save them.")
+            self._repeat_announced = n
+
+        def update_repeat_badge(self):
+            n = len(getattr(self, "_repeat_cache", (0, []))[1])
+            if getattr(self, "find_repeats_btn", None) is not None:
+                self.find_repeats_btn.configure(text=f"Find repeats ({n})" if n else
+                                                "Find repeats...")
+
+        def find_repeats(self):
+            """Audio that aired more than once, across all recordings the
+            program has transcribed (not just what's in the Inbox now)."""
+            import jingles
+            win = ctk.CTkToplevel(self)
+            win.title("Find repeated jingles, ads and songs")
+            win.geometry("760x600")
+            win.transient(self)
+            ctk.CTkLabel(win, text="Repeated jingles, ads and songs", font=font(14, "bold"),
+                         anchor="w").pack(fill="x", padx=18, pady=(14, 0))
+            info = ctk.CTkLabel(win, text="", text_color=GRAY, font=font(11), anchor="w",
+                                justify="left", wraplength=720)
+            info.pack(fill="x", padx=18)
+            bar = ctk.CTkProgressBar(win)
+            bar.pack(fill="x", padx=18, pady=(8, 4))
+            bar.set(0)
+            body = ctk.CTkScrollableFrame(win)
+            body.pack(fill="both", expand=True, padx=18, pady=(4, 14))
+            win._body = body  # (for tests)
+            stop = threading.Event()
+
+            def should_stop():
+                if stop.is_set():
+                    raise T.Stopped()
+
+            def progress(fraction, text):
+                self.ui_calls.put(lambda: (bar.set(fraction), info.configure(text=text))
+                                  if win.winfo_exists() else None)
+
+            def work():
+                try:
+                    results, compared = self.compute_repeats(True, progress, should_stop)
+                except T.Stopped:
+                    return
+                except Exception as e:
+                    log.warning("Repeat finder failed: %s", e)
+                    results, compared = e, 0
+                self.ui_calls.put(lambda: show(results, compared) if win.winfo_exists() else None)
+
+            def show(results, compared):
+                bar.pack_forget()
+                if isinstance(results, Exception):
+                    info.configure(text=f"Couldn't finish: {results}")
+                    return
+                self._repeat_cache = (time.time(), results)
+                self._repeat_announced = len(results)
+                self.update_repeat_badge()
+                if compared < 2:
+                    info.configure(text="Nothing to compare yet. Repeats are found once at "
+                                        "least 2 recordings have been transcribed.")
+                    return
+                if not results:
+                    info.configure(text=f"No new repeats in your last {compared} recordings. "
+                                        "This list also checks by itself every 30 minutes.")
+                    return
+                info.configure(text=f"These played more than once in your last {compared} "
+                                    "recordings. Save the ones you want written correctly "
+                                    "every time.")
+                for r in results[:60]:
+                    # Airings whose recording is still in the Inbox can be played
+                    # and saved; the others are only written into.
+                    avail = [(self.audio_for(n), a, b) for n, a, b in r["places"]]
+                    avail = [(p, a, b) for p, a, b in avail if p]
+                    row = ctk.CTkFrame(body, corner_radius=8)
+                    row.pack(fill="x", pady=4)
+                    save_btn = ctk.CTkButton(row, text="Save...", width=80, height=28)
+                    save_btn.pack(side="right", padx=(6, 12))  # first, so it's never squeezed
+                    play_btn = ghost_button(row, "▶ Play", None, width=80, height=28)
+                    play_btn.pack(side="right")
+                    left = ctk.CTkFrame(row, fg_color="transparent")
+                    left.pack(side="left", fill="x", expand=True, padx=12, pady=8)
+                    title = (f"{self.guess_kind(r['seconds'])}  ·  "
+                             f"{self.describe_length(r['seconds'])}  ·  aired {r['count']} times")
+                    ctk.CTkLabel(left, text=title, font=font(12, "bold"), anchor="w"
+                                 ).pack(fill="x")
+                    excerpt, chosen = "", (avail[0] if avail else None)
+                    for n, a, b in r["places"]:
+                        text = self.transcript_excerpt(Path(n), a, b)
+                        if text and not excerpt:
+                            excerpt = text
+                        p = self.audio_for(n)
+                        if text and p:
+                            excerpt, chosen = text, (p, a, b)
+                            break
+                    if not avail:
+                        for w in (play_btn, save_btn):
+                            w.configure(state="disabled")
+                    ctk.CTkLabel(left, text=shorten(excerpt, 110) if excerpt else "No words yet",
+                                 font=font(11), anchor="w", justify="left", wraplength=520,
+                                 text_color=GRAY if excerpt else ("gray55", "gray50")
+                                 ).pack(fill="x")
+                    if not avail:
+                        ctk.CTkLabel(left, text="The original recordings are no longer in the "
+                                                "Inbox, so it can't be played or saved.",
+                                     font=font(11), anchor="w", text_color=("gray55", "gray50")
+                                     ).pack(fill="x")
+                        continue
+                    chosen_index = avail.index(chosen)
+
+                    def with_exact(then, r=r, avail=avail, button=None):
+                        """Work out the exact start/end once (lining up the
+                        airings), then carry on."""
+                        if "exact" in r:
+                            then()
+                            return
+                        if button is not None:
+                            button.configure(text="Checking…")
+
+                        def job():
+                            try:
+                                r["exact"] = jingles.refine_places(avail)
+                            except Exception as e:
+                                log.warning("Couldn't find exact edges: %s", e)
+                                r["exact"] = list(avail)
+                            self.ui_calls.put(then)
+                        threading.Thread(target=job, daemon=True).start()
+
+                    def play(b=play_btn, r=r, i=chosen_index, with_exact=with_exact):
+                        def go():
+                            b.configure(text="▶ Play")
+                            p, pa, pb = r["exact"][i]
+                            self.play_clip(b, Path(p), pa, pb)
+                        with_exact(go, button=b)
+                    play_btn.configure(command=play)
+
+                    def save(r=r, row=row, excerpt=excerpt, i=chosen_index, with_exact=with_exact,
+                             button=save_btn):
+                        with_exact(lambda: (button.configure(text="Save..."),
+                                            open_save(r, row, excerpt, i)), button=button)
+
+                    save_btn.configure(command=save)
+
+            def open_save(r, row, excerpt, i):
+                path, a, b = r["exact"][i]
+                exact_by_name = {Path(p).name: (pa, pb) for p, pa, pb in r["exact"]}
+                rough = {n: (pa, pb) for n, pa, pb in r["places"]}
+                # How far the exact edges moved from the rough ones (used for
+                # airings whose recording is gone).
+                move = a - rough.get(Path(path).name, (a, b))[0]
+
+                def after_saved(label, sa, sb, correct, kind_name):
+                    row.destroy()
+                    fixed = 0
+                    for n, (ra, rb) in rough.items():
+                        tp = self.transcript_for(Path(n))
+                        if not tp:
+                            continue
+                        start = exact_by_name[n][0] if n in exact_by_name else ra + move
+                        start += sa - a  # keep any trimming of the times
+                        try:
+                            self.replace_with_jingle(tp, start, start + (sb - sa),
+                                                     correct, kind_name.upper())
+                            fixed += 1
+                        except OSError as e:
+                            log.warning("Couldn't update %s: %s", tp.name, e)
+                    cache = getattr(self, "_repeat_cache", (0, []))
+                    self._repeat_cache = (cache[0], [x for x in cache[1] if x is not r])
+                    self._repeat_announced = len(self._repeat_cache[1])
+                    self.update_repeat_badge()
+                    info.configure(text=f'Saved "{label}"' + (
+                        f", and written into {fixed} transcript"
+                        f"{'s' if fixed != 1 else ''}." if fixed else "."))
+
+                more_places = r["count"] - 1
+                heard = (f"Heard in {Path(path).stem} at {T.format_timestamp(a)}"
+                         + (f" (and {more_places} more)" if more_places else ""))
+                self.jingle_dialog(win, Path(path), T.format_timestamp(a),
+                                   T.format_timestamp(b), excerpt, after_saved,
+                                   summary=f"{self.describe_length(b - a)} · "
+                                           f"aired {r['count']} times · found "
+                                           "automatically",
+                                   heard_in=heard, transcript=self.transcript_for(path),
+                                   exact=(a, b))
+
+            # Fresh results from the automatic check: show them straight away.
+            import jingles as _j
+            cached_at, cached = getattr(self, "_repeat_cache", (0, None))
+            missing = any(not _j.has_codes(self.output_dir(), p.name)
+                          for p in self.inbox_audio()[:self.REPEAT_HISTORY])
+            if cached is not None and time.time() - cached_at < 600 and not missing:
+                show(cached, len(_j.load_codes(self.output_dir(), self.REPEAT_HISTORY)))
+            else:
+                info.configure(text="Comparing your recordings…")
+                threading.Thread(target=work, name="repeat-finder", daemon=True).start()
+            win.protocol("WM_DELETE_WINDOW", lambda: (stop.set(), win.destroy()))
+            win.bind("<Escape>", lambda e: (stop.set(), win.destroy()))
 
         def transcript_for(self, audio_path):
             """The transcript of a recording, with its real file name (the
@@ -2536,169 +2808,6 @@ def build_app_class():
             except OSError:
                 return ""
             return " ".join(words)
-
-        def find_repeats(self):
-            """Scan recent recordings for audio that aired more than once."""
-            import jingles
-            inbox = self.engine.inbox
-            types = {e.lower() for e in self.config_raw().get("file_types", [])} or {
-                ".mp3", ".wav", ".m4a"}
-            try:
-                audio = sorted((p for p in inbox.iterdir()
-                                if p.is_file() and p.suffix.lower() in types),
-                               key=lambda p: p.stat().st_mtime, reverse=True)[:self.REPEAT_FILES]
-            except (OSError, AttributeError):
-                audio = []
-            win = ctk.CTkToplevel(self)
-            win.title("Find repeated jingles, ads and songs")
-            win.geometry("760x600")
-            win.transient(self)
-            ctk.CTkLabel(win, text="Repeated jingles, ads and songs", font=font(14, "bold"),
-                         anchor="w").pack(fill="x", padx=18, pady=(14, 0))
-            info = ctk.CTkLabel(win, text="", text_color=GRAY, font=font(11), anchor="w",
-                                justify="left", wraplength=720)
-            info.pack(fill="x", padx=18)
-            bar = ctk.CTkProgressBar(win)
-            bar.pack(fill="x", padx=18, pady=(8, 4))
-            bar.set(0)
-            body = ctk.CTkScrollableFrame(win)
-            body.pack(fill="both", expand=True, padx=18, pady=(4, 14))
-            win._body = body  # (for tests)
-            if len(audio) < 2:
-                info.configure(text="This needs at least 2 recordings in the Inbox. The finder "
-                                    "compares them to spot audio that airs again and again.")
-                bar.pack_forget()
-                return
-            info.configure(text=f"Comparing your {len(audio)} newest recordings in the Inbox "
-                                "(about 5 seconds per hour of audio)…")
-            stop = threading.Event()
-
-            def should_stop():
-                if stop.is_set():
-                    raise T.Stopped()
-
-            def progress(fraction, text):
-                self.ui_calls.put(lambda: (bar.set(fraction), info.configure(text=text))
-                                  if win.winfo_exists() else None)
-
-            def work():
-                try:
-                    library = jingles.load_library(self.output_dir())
-                    results = jingles.find_repeats(audio, library, progress, should_stop)
-                except T.Stopped:
-                    return
-                except Exception as e:
-                    log.warning("Repeat finder failed: %s", e)
-                    results = e
-                self.ui_calls.put(lambda: show(results) if win.winfo_exists() else None)
-
-            def show(results):
-                bar.pack_forget()
-                if isinstance(results, Exception):
-                    info.configure(text=f"Couldn't finish: {results}")
-                    return
-                if not results:
-                    info.configure(text="No repeated audio found that isn't in the library "
-                                        "already. Try again when more recordings are in.")
-                    return
-                info.configure(text="These played more than once. Save the ones you want "
-                                    "written correctly every time.")
-                for r in results[:60]:
-                    path0, a0, b0 = r["places"][0]
-                    row = ctk.CTkFrame(body, corner_radius=8)
-                    row.pack(fill="x", pady=4)
-                    save_btn = ctk.CTkButton(row, text="Save...", width=80, height=28)
-                    save_btn.pack(side="right", padx=(6, 12))  # first, so it's never squeezed
-                    play_btn = ghost_button(row, "▶ Play", None, width=80, height=28)
-                    play_btn.pack(side="right")
-                    left = ctk.CTkFrame(row, fg_color="transparent")
-                    left.pack(side="left", fill="x", expand=True, padx=12, pady=8)
-                    title = (f"{self.guess_kind(r['seconds'])}  ·  "
-                             f"{self.describe_length(r['seconds'])}  ·  aired {r['count']} times")
-                    ctk.CTkLabel(left, text=title, font=font(12, "bold"), anchor="w"
-                                 ).pack(fill="x")
-                    # Use the airing whose transcript has words (for the text, Play
-                    # and Open transcript); otherwise the first one.
-                    excerpt, chosen = "", r["places"][0]
-                    for place in r["places"]:
-                        excerpt = self.transcript_excerpt(*place)
-                        if excerpt:
-                            chosen = place
-                            break
-                    chosen_index = r["places"].index(chosen)
-
-                    def with_exact(then, r=r, button=None):
-                        """Work out the exact start/end once (lining up the
-                        airings), then carry on."""
-                        if "exact" in r:
-                            then()
-                            return
-                        if button is not None:
-                            button.configure(text="Checking…")
-
-                        def job():
-                            try:
-                                r["exact"] = jingles.refine_places(r["places"])
-                            except Exception as e:
-                                log.warning("Couldn't find exact edges: %s", e)
-                                r["exact"] = list(r["places"])
-                            self.ui_calls.put(then)
-                        threading.Thread(target=job, daemon=True).start()
-
-                    def play(b=play_btn, r=r, i=chosen_index, with_exact=with_exact):
-                        def go():
-                            b.configure(text="▶ Play")
-                            p, pa, pb = r["exact"][i]
-                            self.play_clip(b, Path(p), pa, pb)
-                        with_exact(go, button=b)
-                    play_btn.configure(command=play)
-                    ctk.CTkLabel(left, text=shorten(excerpt, 110) if excerpt else "No words yet",
-                                 font=font(11), anchor="w", justify="left", wraplength=520,
-                                 text_color=GRAY if excerpt else ("gray55", "gray50")
-                                 ).pack(fill="x")
-
-                    def save(r=r, row=row, excerpt=excerpt, i=chosen_index, with_exact=with_exact,
-                             button=save_btn):
-                        with_exact(lambda: (button.configure(text="Save..."),
-                                            open_save(r, row, excerpt, i)), button=button)
-
-                    def open_save(r, row, excerpt, i):
-                        path, a, b = r["exact"][i]
-
-                        def after_saved(label, sa, sb, correct, kind_name):
-                            row.destroy()
-                            fixed = 0
-                            for p, pa, pb in r["exact"]:
-                                tp = self.transcript_for(p)
-                                if tp:
-                                    shift = sa - a  # keep any trimming of the times
-                                    try:
-                                        self.replace_with_jingle(
-                                            tp, pa + shift, pa + shift + (sb - sa),
-                                            correct, kind_name.upper())
-                                        fixed += 1
-                                    except OSError as e:
-                                        log.warning("Couldn't update %s: %s", tp.name, e)
-                            info.configure(text=f'Saved "{label}"' + (
-                                f", and written into {fixed} transcript"
-                                f"{'s' if fixed != 1 else ''}." if fixed else "."))
-
-                        more_places = r["count"] - 1
-                        heard = (f"Heard in {Path(path).stem} at {T.format_timestamp(a)}"
-                                 + (f" (and {more_places} more)" if more_places else ""))
-                        self.jingle_dialog(win, Path(path), T.format_timestamp(a),
-                                           T.format_timestamp(b), excerpt, after_saved,
-                                           summary=f"{self.describe_length(b - a)} · "
-                                                   f"aired {r['count']} times · found "
-                                                   "automatically",
-                                           heard_in=heard, transcript=self.transcript_for(path),
-                                           exact=(a, b))
-
-                    save_btn.configure(command=save)
-
-            threading.Thread(target=work, name="repeat-finder", daemon=True).start()
-            win.protocol("WM_DELETE_WINDOW", lambda: (stop.set(), win.destroy()))
-            win.bind("<Escape>", lambda e: (stop.set(), win.destroy()))
 
         def replace_with_jingle(self, path, a, b, text, label="JINGLE", timed=None):
             with open(path, encoding="utf-8") as f:

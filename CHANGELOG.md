@@ -6,6 +6,26 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.25.0] - 2026-11-11
+
+### Changed
+- **Find repeats covers your whole history, not just the Inbox.** Every
+  recording that's transcribed now leaves a small sound fingerprint (about
+  350 KB per hour) in a hidden `.fingerprints` folder in the Transcripts
+  folder. The finder compares the newest 200 of them in about a second,
+  without reading any audio, and still finds repeats after the originals
+  have been moved or deleted. Older recordings still in the Inbox are
+  fingerprinted the first time you open Find repeats.
+- **It checks by itself.** Every 30 minutes the program looks for new
+  repeats in the background; the button shows how many are waiting
+  ("Find repeats (4)") and a notification pops up when new ones appear.
+- Clips whose original recordings are all gone are still listed (and are
+  written into those transcripts when saved from another airing), but
+  can't be played or saved on their own.
+- Long stretches that always air together (e.g. a nightly sign-off
+  sequence) are shown as one item instead of many overlapping pieces, and
+  very common jingles (airing in 100+ recordings) are now found too.
+
 ## [1.24.1] - 2026-11-11
 
 ### Fixed

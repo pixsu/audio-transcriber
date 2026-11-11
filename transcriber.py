@@ -34,7 +34,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.24.1"
+__version__ = "1.25.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -810,6 +810,13 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
                 log.warning("   Jingle matching didn't work (%s)", e)
         if skip:
             clips = music_detect.sound_clips(merge_spans(skip), duration)
+        # Keep this recording's sound codes, so Find repeats can compare it
+        # with every other recording later (even once the original is gone).
+        try:
+            import jingles
+            jingles.store_codes(config["output_folder"], audio_path, source)
+        except Exception as e:
+            log.debug("   Couldn't store sound codes (%s)", e)
 
     options = dict(
         language=config["language"],

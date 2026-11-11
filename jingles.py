@@ -251,100 +251,155 @@ def lines_for_match(item: dict, start: float, end: float, offset: float):
 
 # --------------------------------------------------------------- repeats
 
-def _codes(audio: np.ndarray):
-    """One 32-bit sound code every 10 ms (how the loudness of neighbouring
-    frequency bands changes), plus loudness, for spotting repeated audio."""
+CODE_SMOOTH = 30          # each code describes 0.3 s of sound...
+CODE_LAG = 15             # ...compared with 0.15 s earlier
+CODE_EVERY = 4            # one code kept every 40 ms (about 350 KB per hour)
+CODE_STEP = 0.01 * CODE_EVERY
+REPEAT_MIN_VOTES = 15     # matching codes needed for a stretch to count
+REPEAT_NEIGHBOURS = 11    # each place is compared with this many others with the same code
+STORE_FOLDER = ".fingerprints"
+
+
+def make_codes(audio: np.ndarray):
+    """Compact sound codes for spotting repeated audio: one 32-bit code
+    every 40 ms (how the loudness of neighbouring frequency bands changes),
+    and which of them are not dead air."""
     mel = music_detect.log_mel(audio)
-    k = 10  # smoothed over 0.1 s, so small timing differences don't matter
+    k = CODE_SMOOTH
+    if len(mel) <= k + CODE_LAG:
+        return np.zeros(0, np.uint32), np.zeros(0, bool)
     c = np.cumsum(np.vstack([np.zeros((1, mel.shape[1]), np.float32), mel]), axis=0)
     sm = (c[k:] - c[:-k]) / k
     edges = np.linspace(0, mel.shape[1], 34).astype(int)
     bands = np.stack([sm[:, edges[i]:edges[i + 1]].mean(axis=1) for i in range(33)], axis=1)
     d = bands[:, :-1] - bands[:, 1:]
-    lag = 5
-    bits = (d[lag:] - d[:-lag]) > 0
+    bits = (d[CODE_LAG:] - d[:-CODE_LAG]) > 0
     codes = (bits.astype(np.uint64) << np.arange(32, dtype=np.uint64)).sum(axis=1)
-    return codes.astype(np.uint32), sm[lag:].mean(axis=1)
+    loud = sm[CODE_LAG:].mean(axis=1) > -8
+    return codes.astype(np.uint32)[::CODE_EVERY], loud[::CODE_EVERY]
 
 
-CODE_STEP = 0.01          # seconds per code
-REPEAT_MIN_VOTES = 25     # matching codes needed for a stretch to count
+# --------------------------------------------------------------- stored codes
+# Every transcribed recording leaves its codes in .fingerprints in the
+# Transcripts folder, so repeats can be found across all of them later -
+# even after the original recordings are gone - without reading any audio.
+
+def _store_name(audio_name: str) -> str:
+    return re.sub(r"[^\w\-. ]+", "_", audio_name)[:150] + ".npz"
 
 
-def find_repeats(audio_paths, library=(), progress=None, should_stop=None,
-                 min_seconds=4.0, max_seconds=420.0):
-    """Stretches of audio that air more than once across these recordings
-    (and aren't in the library yet).
+def store_codes(output_folder, audio_path, audio: np.ndarray = None) -> bool:
+    """Save the codes of one recording (decoding it if `audio` isn't given)."""
+    folder = Path(output_folder) / STORE_FOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+    if audio is None:
+        from faster_whisper.audio import decode_audio
+        audio = decode_audio(str(audio_path))
+    codes, loud = make_codes(audio)
+    try:
+        recorded = Path(audio_path).stat().st_mtime
+    except OSError:
+        recorded = time.time()
+    target = folder / _store_name(Path(audio_path).name)
+    tmp = target.with_name(target.stem + ".tmp.npz")
+    np.savez(tmp, codes=codes, loud=np.packbits(loud), n=len(loud),
+             name=Path(audio_path).name, recorded=recorded,
+             seconds=len(audio) / SAMPLE_RATE)
+    os.replace(tmp, target)
+    return True
 
-    Returns [{"seconds", "count", "places": [(path, start, end), ...]}, ...],
+
+def has_codes(output_folder, audio_name: str) -> bool:
+    return (Path(output_folder) / STORE_FOLDER / _store_name(audio_name)).exists()
+
+
+def load_codes(output_folder, limit: int = 200):
+    """[(name, codes, loud), ...] for the newest `limit` stored recordings."""
+    folder = Path(output_folder) / STORE_FOLDER
+    entries = []
+    try:
+        files = list(folder.glob("*.npz"))
+    except OSError:
+        return []
+    for f in files:
+        if ".tmp" in f.name:
+            continue
+        try:
+            with np.load(f, allow_pickle=False) as z:
+                n = int(z["n"])
+                entries.append((float(z["recorded"]), str(z["name"]), z["codes"],
+                                np.unpackbits(z["loud"])[:n].astype(bool)))
+        except Exception as e:
+            log.debug("Skipping %s (%s)", f.name, e)
+    entries.sort(key=lambda e: -e[0])
+    return [(name, codes, loud) for _, name, codes, loud in entries[:limit]]
+
+
+# --------------------------------------------------------------- repeats
+
+def find_repeats(entries, min_seconds=4.0, max_seconds=900.0, should_stop=None):
+    """Stretches of audio that air more than once across recordings.
+
+    entries: [(recording name, codes, loud), ...] (see load_codes).
+    Returns [{"seconds", "count", "places": [(name, start, end), ...]}, ...],
     most useful first (aired most often, then longest)."""
     from collections import defaultdict
-    from faster_whisper.audio import decode_audio
-
-    all_codes, all_file, all_pos, known = [], [], [], defaultdict(list)
-    paths = list(audio_paths)
-    for fi, path in enumerate(paths):
-        if should_stop:
-            should_stop()
-        if progress:
-            progress(fi / max(1, len(paths)) * 0.8, f"Reading {Path(path).name}")
-        try:
-            audio = decode_audio(str(path))
-        except Exception as e:
-            log.warning("Repeat finder skipped %s (%s)", Path(path).name, e)
-            continue
-        codes, loud = _codes(audio)
-        keep = np.flatnonzero(loud > -8)  # not dead air
-        all_codes.append(codes[keep])
-        all_file.append(np.full(len(keep), fi, np.int32))
-        all_pos.append(keep.astype(np.int32))
-        for a, b, _item, _off in find_jingles(audio, list(library)):
-            known[fi].append((a, b))
-    if not all_codes:
+    if len(entries) < 1:
         return []
-    if progress:
-        progress(0.85, "Comparing recordings")
-    codes = np.concatenate(all_codes)
-    fid = np.concatenate(all_file)
-    pos = np.concatenate(all_pos)
-    order = np.argsort(codes, kind="stable")
+    names = [e[0] for e in entries]
+    codes = np.concatenate([c[m] for _, c, m in entries])
+    fid = np.concatenate([np.full(int(m.sum()), i, np.int32) for i, (_, c, m) in enumerate(entries)])
+    pos = np.concatenate([np.flatnonzero(m).astype(np.int32) for _, c, m in entries])
+    if not len(codes):
+        return []
+    order = np.argsort(codes, kind="stable")  # keeps (recording, time) order within a code
     codes, fid, pos = codes[order], fid[order], pos[order]
     cuts = np.flatnonzero(np.diff(codes)) + 1
-    starts = np.concatenate([[0], cuts])
-    ends = np.concatenate([cuts, [len(codes)]])
-    sizes = ends - starts
-    # The same code in different places, lined up by time offset.
-    hits = defaultdict(list)  # (file A, file B, offset in 0.1 s) -> positions in A
-    for s, e in zip(starts[(sizes >= 2) & (sizes <= 30)], ends[(sizes >= 2) & (sizes <= 30)]):
-        f, q = fid[s:e], pos[s:e]
-        for i in range(e - s):
-            for j in range(i + 1, e - s):
-                a, b = (i, j) if (f[i], q[i]) < (f[j], q[j]) else (j, i)
-                if f[a] == f[b] and q[b] - q[a] < 12000:
-                    continue  # same file, under 2 minutes apart: a song's own chorus
-                hits[(int(f[a]), int(f[b]), int(q[b] - q[a]) // 10)].append(int(q[a]))
-    # Each well-supported offset -> matching stretches in both recordings.
-    places = []      # (file, start, end) in seconds
-    links = []       # pairs of indexes into places that are the same audio
-    for (fa, fb, off), qs in hits.items():
-        if len(qs) < REPEAT_MIN_VOTES:
-            continue
-        qs = np.sort(np.asarray(qs))
-        groups = np.split(qs, np.flatnonzero(np.diff(qs) > 300) + 1)  # break at 3 s gaps
-        for g in groups:
+    gid = np.zeros(len(codes), np.int64)
+    gid[cuts] = 1
+    gid = np.cumsum(gid)
+    sizes = np.bincount(gid)
+    common = sizes[gid] > 3000  # a code that's everywhere (hum, tone) says nothing
+    # Each place is paired with the next few places with the same code.
+    fa_l, fb_l, qa_l, qb_l = [], [], [], []
+    for d in range(1, REPEAT_NEIGHBOURS + 1):
+        same = (gid[:-d] == gid[d:]) & ~common[:-d]
+        if not same.any():
+            break
+        i = np.flatnonzero(same)
+        fa, fb, qa, qb = fid[i], fid[i + d], pos[i], pos[i + d]
+        keep = ~((fa == fb) & (qb - qa < int(120 / CODE_STEP)))  # not a song's own chorus
+        fa_l.append(fa[keep]); fb_l.append(fb[keep]); qa_l.append(qa[keep]); qb_l.append(qb[keep])
+    if should_stop:
+        should_stop()
+    if not fa_l:
+        return []
+    fa, fb, qa, qb = (np.concatenate(x) for x in (fa_l, fb_l, qa_l, qb_l))
+    bin_size = max(1, int(round(0.1 / CODE_STEP)))
+    off = (qb.astype(np.int64) - qa) // bin_size
+    key = (fa.astype(np.int64) * 100_000 + fb) * 1_000_000 + (off + 500_000)
+    uniq, inv, counts = np.unique(key, return_inverse=True, return_counts=True)
+    strong = np.flatnonzero(counts >= REPEAT_MIN_VOTES)
+    places, links = [], []
+    gap = int(3 / CODE_STEP)
+    tail = int(0.3 / CODE_STEP)
+    for u in strong:
+        k = int(uniq[u])
+        offset = (k % 1_000_000 - 500_000) * bin_size * CODE_STEP
+        pair = k // 1_000_000
+        a_file, b_file = pair // 100_000, pair % 100_000
+        qs = np.sort(qa[inv == u])
+        for g in np.split(qs, np.flatnonzero(np.diff(qs) > gap) + 1):
             if len(g) < REPEAT_MIN_VOTES:
                 continue
-            a0, a1 = g[0] * CODE_STEP, (g[-1] + 15) * CODE_STEP
+            a0, a1 = g[0] * CODE_STEP, (g[-1] + tail) * CODE_STEP
             if not min_seconds <= a1 - a0 <= max_seconds:
                 continue
-            shift = off * 10 * CODE_STEP
-            places.append((fa, a0, a1))
-            places.append((fb, a0 + shift, a1 + shift))
+            places.append((a_file, a0, a1))
+            places.append((b_file, a0 + offset, a1 + offset))
             links.append((len(places) - 2, len(places) - 1))
     if not places:
         return []
-    # Join places that overlap in the same recording (same clip found via
-    # several pairs of recordings).
     parent = list(range(len(places)))
 
     def root(i):
@@ -368,7 +423,6 @@ def find_repeats(audio_paths, library=(), progress=None, should_stop=None,
         clusters[root(i)].append(places[i])
     results = []
     for members in clusters.values():
-        # One place per airing: merge overlapping places in the same file.
         airings = []
         for f, a, b in sorted(members):
             if airings and airings[-1][0] == f and a < airings[-1][2] + 60:  # one airing
@@ -377,17 +431,57 @@ def find_repeats(audio_paths, library=(), progress=None, should_stop=None,
                 airings.append((f, a, b))
         if len(airings) < 2:
             continue
-        if any(any(a < kb and b > ka and min(b, kb) - max(a, ka) > 0.5 * (b - a)
-                   for ka, kb in known.get(f, [])) for f, a, b in airings):
-            continue  # already in the library
+        results.append(airings)
+    # Pieces of one longer stretch that always airs together (e.g. a whole
+    # sign-off sequence) come out as several clips side by side: join them.
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(results)):
+            for j in range(i + 1, len(results)):
+                A, B = results[i], results[j]
+                if len(A) != len(B) or sorted(f for f, _, _ in A) != sorted(f for f, _, _ in B):
+                    continue
+                pairs = list(zip(sorted(A), sorted(B)))
+                if all(fa == fb and min(b1, b2) - max(a1, a2) > -15
+                       for (fa, a1, b1), (fb, a2, b2) in pairs):
+                    results[i] = [(fa, min(a1, a2), max(b1, b2))
+                                  for (fa, a1, b1), (_, a2, b2) in pairs]
+                    del results[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    out = []
+    for airings in results:
         seconds = float(np.median([b - a for _, a, b in airings]))
-        results.append({"seconds": round(seconds, 1), "count": len(airings),
-                        "places": [(paths[f], round(float(a), 1), round(float(b), 1))
-                                   for f, a, b in airings]})
-    results.sort(key=lambda r: (-r["count"], -r["seconds"]))
-    if progress:
-        progress(1.0, "Done")
-    return results
+        if seconds > max_seconds:
+            continue
+        out.append({"seconds": round(seconds, 1), "count": len(airings),
+                    "places": [(names[f], round(float(max(0.0, a)), 1), round(float(b), 1))
+                               for f, a, b in airings]})
+    out.sort(key=lambda r: (-r["count"], -r["seconds"]))
+    return out
+
+
+def known_in_library(result, audio_lookup, library) -> bool:
+    """True when a repeat is already saved (checked on one airing whose
+    recording is still available)."""
+    if not library:
+        return False
+    for name, a, b in result["places"]:
+        path = audio_lookup(name)
+        if not path:
+            continue
+        try:
+            clip = decode_window(path, max(0.0, a - 2), b + 2)
+        except Exception:
+            continue
+        for ja, jb, _item, _off in find_jingles(clip, library):
+            if min(jb, b - a + 2) - max(ja, 2) > 0.5 * (b - a):
+                return True
+        return False
+    return False
 
 
 # --------------------------------------------------------------- exact edges
