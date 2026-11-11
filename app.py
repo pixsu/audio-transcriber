@@ -443,6 +443,63 @@ def count_in_transcript(path, fix):
     return sum(1 for l in lines if fix_line(l, fix) != l)
 
 
+# A fix is risky when its "wrong" word is short or already common in the
+# transcripts: it's probably a real word somewhere, and would change there too.
+RISKY_SHORT = 3       # letters
+RISKY_COUNT = 15      # times in the transcripts
+RISKY_FILES = 5       # transcripts it appears in
+
+
+def word_counts(folder, words, skip=None):
+    """{word: (times, transcripts)} for whole-word, any-case matches."""
+    pats = {w: re.compile(r"(?<!\w)" + re.escape(w) + r"(?!\w)", re.IGNORECASE) for w in words}
+    counts = {w: [0, 0] for w in words}
+    try:
+        files = [f for f in Path(folder).glob("*.txt") if not f.name.startswith(".")]
+    except OSError:
+        files = []
+    for f in files:
+        if skip and f == skip:
+            continue
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        # Only the words, not the [labels / times].
+        text = re.sub(r"^\[[^\]]*\]", "", text, flags=re.M)
+        for w, pat in pats.items():
+            n = len(pat.findall(text))
+            if n:
+                counts[w][0] += n
+                counts[w][1] += 1
+    return {w: tuple(c) for w, c in counts.items()}
+
+
+def fix_warnings(folder, fixes, changed, skip=None):
+    """Plain-English warnings for risky or clashing fixes. `changed` are the
+    'wrong' words that are new or edited (only those are checked for risk)."""
+    warnings = []
+    counts = word_counts(folder, list(changed), skip) if changed else {}
+    for wrong in changed:
+        times, files = counts.get(wrong, (0, 0))
+        letters = len(re.sub(r"\W", "", wrong))
+        if times >= RISKY_COUNT or files >= RISKY_FILES:
+            warnings.append(f'"{wrong}" already appears {times} times in {files} transcripts. '
+                            "If it's a real word there, the fix will change it in every new "
+                            "file too.")
+        elif letters <= RISKY_SHORT:
+            warnings.append(f'"{wrong}" is very short ({letters} letters), so it may also be '
+                            "a real word or part of a name.")
+    for wrong, right in fixes.items():
+        for other, other_right in fixes.items():
+            if other == wrong:
+                continue
+            if re.search(r"(?<!\w)" + re.escape(other) + r"(?!\w)", right, re.IGNORECASE):
+                warnings.append(f'"{wrong} = {right}" is changed again by "{other} = '
+                                f'{other_right}", so you\'d get "{other_right}" instead.')
+    return warnings
+
+
 def open_path(path):
     try:
         os.startfile(str(path))
@@ -1504,8 +1561,12 @@ def build_app_class():
                                     pady=(0, 4))
             ctk.CTkLabel(card, text="Jingles, ads, songs", anchor="w", font=font(12, "bold")
                          ).grid(row=2, column=0, sticky="w", padx=12, pady=(10, 0))
-            ghost_button(card, "Manage...", self.manage_jingles, width=80
-                         ).grid(row=2, column=1, sticky="e", padx=12, pady=(10, 0))
+            jingle_buttons = ctk.CTkFrame(card, fg_color="transparent")
+            jingle_buttons.grid(row=2, column=1, sticky="e", padx=12, pady=(10, 0))
+            ghost_button(jingle_buttons, "Find repeats...", self.find_repeats, width=110
+                         ).pack(side="left", padx=(0, 6))
+            ghost_button(jingle_buttons, "Manage...", self.manage_jingles, width=80
+                         ).pack(side="left")
             self.jingle_summary = ctk.CTkLabel(card, text="", anchor="w", justify="left",
                                                text_color=GRAY, font=font(11), wraplength=290)
             self.jingle_summary.grid(row=3, column=0, columnspan=2, sticky="w", padx=12,
@@ -2163,6 +2224,21 @@ def build_app_class():
                 prefill.append(body)
             text = " ".join(prefill)
 
+            def after_saved(label, a, b, correct, kind_name):
+                if messagebox.askyesno(
+                        "Jingle saved",
+                        f'"{label}" will be recognised in every new file.\n\n'
+                        "Replace the selected lines in this transcript with it now?",
+                        parent=parent):
+                    self.replace_with_jingle(path, a, b, correct, kind_name.upper())
+                    reload(highlight=correct[:30])
+                status.configure(text=f'Jingle "{label}" saved')
+
+            self.jingle_dialog(parent, audio_path, stamps[0].group(1), stamps[-1].group(2),
+                               text, after_saved)
+
+        def jingle_dialog(self, parent, audio_path, start_text, end_text, text, after_saved):
+            """Name, times, type and correct text -> saved in the library."""
             dlg = ctk.CTkToplevel(parent)
             dlg.title("Save as jingle / ad / song")
             dlg.geometry("640x560")
@@ -2178,17 +2254,17 @@ def build_app_class():
             ctk.CTkLabel(dlg, text="Ends at", font=font(12, "bold"), anchor="w"
                          ).grid(row=2, column=1, sticky="w", padx=(6, 18), pady=(10, 2))
             start_e = ctk.CTkEntry(dlg)
-            start_e.insert(0, stamps[0].group(1))
+            start_e.insert(0, start_text)
             start_e.grid(row=3, column=0, sticky="ew", padx=(18, 6))
             end_e = ctk.CTkEntry(dlg)
-            end_e.insert(0, stamps[-1].group(2))
+            end_e.insert(0, end_text)
             end_e.grid(row=3, column=1, sticky="ew", padx=(6, 18))
             kind_box = ctk.CTkFrame(dlg, fg_color="transparent")
             kind_box.grid(row=4, column=0, columnspan=2, sticky="ew", padx=18, pady=(10, 0))
             ctk.CTkLabel(kind_box, text="Type", font=font(12, "bold")).pack(side="left")
             kind = ctk.CTkSegmentedButton(kind_box, values=["Jingle", "Ad", "Song"])
-            kind.set("Song" if (self._seconds(stamps[-1].group(2))
-                                - self._seconds(stamps[0].group(1)) > 90) else "Jingle")
+            kind.set("Song" if self._seconds(end_text) - self._seconds(start_text) > 90
+                     else "Jingle")
             kind.pack(side="left", padx=12)
             ctk.CTkLabel(dlg, text="Correct text (written every time it plays)",
                          font=font(12, "bold"), anchor="w"
@@ -2245,20 +2321,173 @@ def build_app_class():
                 log.info('Jingle saved: "%s" (%s, %d s)', label, audio_path.name, b - a)
                 dlg.destroy()
                 self.refresh_vocab_summary()
-                # Show it in this transcript straight away.
-                if messagebox.askyesno(
-                        "Jingle saved",
-                        f'"{label}" will be recognised in every new file.\n\n'
-                        "Replace the selected lines in this transcript with it now?",
-                        parent=parent):
-                    self.replace_with_jingle(path, a, b, correct, kind.get().upper(), timed)
-                    reload(highlight=correct[:30])
-                status.configure(text=f'Jingle "{label}" saved')
+                after_saved(label, a, b, correct, kind.get())
 
             ghost_button(bar, "Cancel", dlg.destroy, width=80, height=30).pack(side="right")
             ctk.CTkButton(bar, text="Save", width=90, height=30, command=save
                           ).pack(side="right", padx=(0, 8))
             dlg.bind("<Escape>", lambda e: dlg.destroy())
+
+        # ----------------------------------------------------- repeat finder
+        REPEAT_FILES = 30   # newest recordings scanned
+
+        def transcript_for(self, audio_path):
+            """The transcript of a recording, with its real file name (the
+            index stores names in lowercase; using those would rename the
+            file when it's saved)."""
+            try:
+                real = {p.name.lower(): p for p in self.output_dir().glob("*.txt")}
+            except OSError:
+                return None
+            name = Path(audio_path).name.lower()
+            for txt, src in self.source_of.items():
+                if src.lower() == name and txt.lower() in real:
+                    return real[txt.lower()]
+            return real.get((Path(audio_path).stem + ".txt").lower())
+
+        def transcript_excerpt(self, audio_path, a, b):
+            """The transcript's words between a and b seconds (a starting point
+            for the correct text)."""
+            tp = self.transcript_for(audio_path)
+            if not tp:
+                return ""
+            words = []
+            try:
+                for line in tp.read_text(encoding="utf-8").splitlines():
+                    m = self.TIME_RE.match(line)
+                    if not m or line.startswith("[SILENCE"):
+                        continue
+                    if a - 1 <= self._seconds(m.group(1)) < b:
+                        body = line.split("] ", 1)[-1]
+                        if not (body.startswith("(") and body.endswith(")")):
+                            words.append(body)
+            except OSError:
+                return ""
+            return " ".join(words)
+
+        def find_repeats(self):
+            """Scan recent recordings for audio that aired more than once."""
+            import jingles
+            inbox = self.engine.inbox
+            types = {e.lower() for e in self.config_raw().get("file_types", [])} or {
+                ".mp3", ".wav", ".m4a"}
+            try:
+                audio = sorted((p for p in inbox.iterdir()
+                                if p.is_file() and p.suffix.lower() in types),
+                               key=lambda p: p.stat().st_mtime, reverse=True)[:self.REPEAT_FILES]
+            except (OSError, AttributeError):
+                audio = []
+            win = ctk.CTkToplevel(self)
+            win.title("Find repeated jingles, ads and songs")
+            win.geometry("760x600")
+            win.transient(self)
+            ctk.CTkLabel(win, text="Repeated jingles, ads and songs", font=font(14, "bold"),
+                         anchor="w").pack(fill="x", padx=18, pady=(14, 0))
+            info = ctk.CTkLabel(win, text="", text_color=GRAY, font=font(11), anchor="w",
+                                justify="left", wraplength=720)
+            info.pack(fill="x", padx=18)
+            bar = ctk.CTkProgressBar(win)
+            bar.pack(fill="x", padx=18, pady=(8, 4))
+            bar.set(0)
+            body = ctk.CTkScrollableFrame(win)
+            body.pack(fill="both", expand=True, padx=18, pady=(4, 14))
+            win._body = body  # (for tests)
+            if len(audio) < 2:
+                info.configure(text="This needs at least 2 recordings in the Inbox. The finder "
+                                    "compares them to spot audio that airs again and again.")
+                bar.pack_forget()
+                return
+            info.configure(text=f"Comparing your {len(audio)} newest recordings in the Inbox "
+                                "(about 5 seconds per hour of audio)…")
+            stop = threading.Event()
+
+            def should_stop():
+                if stop.is_set():
+                    raise T.Stopped()
+
+            def progress(fraction, text):
+                self.ui_calls.put(lambda: (bar.set(fraction), info.configure(text=text))
+                                  if win.winfo_exists() else None)
+
+            def work():
+                try:
+                    library = jingles.load_library(self.output_dir())
+                    results = jingles.find_repeats(audio, library, progress, should_stop)
+                except T.Stopped:
+                    return
+                except Exception as e:
+                    log.warning("Repeat finder failed: %s", e)
+                    results = e
+                self.ui_calls.put(lambda: show(results) if win.winfo_exists() else None)
+
+            def show(results):
+                bar.pack_forget()
+                if isinstance(results, Exception):
+                    info.configure(text=f"Couldn't finish: {results}")
+                    return
+                if not results:
+                    info.configure(text="No repeated audio found that isn't in the library "
+                                        "already. Try again when more recordings are in.")
+                    return
+                info.configure(text=f"{len(results)} stretch(es) of audio aired more than once. "
+                                    "Save the ones that are jingles, ads or songs: type the "
+                                    "correct text once, and they'll be written right in every "
+                                    "file from then on.")
+                for r in results[:60]:
+                    path0, a0, b0 = r["places"][0]
+                    row = ctk.CTkFrame(body, corner_radius=8)
+                    row.pack(fill="x", pady=4)
+                    save_btn = ctk.CTkButton(row, text="Save...", width=80, height=28)
+                    save_btn.pack(side="right", padx=12)  # first, so it's never squeezed
+                    left = ctk.CTkFrame(row, fg_color="transparent")
+                    left.pack(side="left", fill="x", expand=True, padx=12, pady=8)
+                    ctk.CTkLabel(left, text=f"{r['seconds']:.0f} s  ·  aired {r['count']} times",
+                                 font=font(12, "bold"), anchor="w").pack(fill="x")
+                    where = "  ·  ".join(f"{shorten(Path(p).stem, 22)} at {T.format_timestamp(a)}"
+                                         for p, a, _ in r["places"][:2])
+                    if r["count"] > 2:
+                        where += f"  ·  and {r['count'] - 2} more"
+                    ctk.CTkLabel(left, text=where, text_color=GRAY, font=font(11), anchor="w",
+                                 justify="left", wraplength=540).pack(fill="x")
+                    excerpt = ""
+                    for p, pa, pb in r["places"]:  # text from any airing that has some
+                        excerpt = self.transcript_excerpt(p, pa, pb)
+                        if excerpt:
+                            break
+                    ctk.CTkLabel(left, text=shorten(excerpt, 110) if excerpt else
+                                 "(no transcript text yet)", font=font(11), anchor="w",
+                                 justify="left", wraplength=520).pack(fill="x")
+
+                    def save(r=r, row=row, excerpt=excerpt):
+                        path, a, b = r["places"][0]
+
+                        def after_saved(label, sa, sb, correct, kind_name):
+                            row.destroy()
+                            fixed = 0
+                            if messagebox.askyesno(
+                                    "Saved",
+                                    f'"{label}" will be recognised in every new file.\n\n'
+                                    f"Also put it in the {r['count']} transcripts where it "
+                                    "aired?", parent=win):
+                                for p, pa, pb in r["places"]:
+                                    tp = self.transcript_for(p)
+                                    if tp:
+                                        shift = sa - a  # keep any trimming of the times
+                                        self.replace_with_jingle(
+                                            tp, pa + shift, pa + shift + (sb - sa),
+                                            correct, kind_name.upper())
+                                        fixed += 1
+                            info.configure(text=f'"{label}" saved' + (
+                                f", and written into {fixed} transcript(s)." if fixed else "."))
+
+                        self.jingle_dialog(win, Path(path), T.format_timestamp(a),
+                                           T.format_timestamp(b), excerpt, after_saved)
+
+                    save_btn.configure(command=save)
+
+            threading.Thread(target=work, name="repeat-finder", daemon=True).start()
+            win.protocol("WM_DELETE_WINDOW", lambda: (stop.set(), win.destroy()))
+            win.bind("<Escape>", lambda e: (stop.set(), win.destroy()))
 
         def replace_with_jingle(self, path, a, b, text, label="JINGLE", timed=None):
             with open(path, encoding="utf-8") as f:
@@ -2382,6 +2611,18 @@ def build_app_class():
                 return
             parts = [f'"{wrong}" → "{right}": {here} line{"s" if here != 1 else ""} fixed here']
             if always:
+                current = T.read_vocabulary(self.output_dir())["replacements"]
+                current[wrong] = right
+                warnings = fix_warnings(self.output_dir(), current, [wrong], skip=path)
+                if warnings and not messagebox.askyesno(
+                        "Fix it everywhere?",
+                        "\n\n".join(f"• {w}" for w in warnings[:5])
+                        + "\n\nYes: fix it in every new file anyway.\n"
+                          "No: fix it only in this transcript.",
+                        icon="warning", parent=parent):
+                    always = False
+                    parts.append("not added to Fixes (only fixed here)")
+            if always:
                 try:
                     T.add_fix(self.output_dir(), wrong, right)
                     self.engine.settings_changed()
@@ -2501,6 +2742,17 @@ def build_app_class():
                     messagebox.showwarning(
                         "Vocabulary", "These fixes need an = sign (wrong = right):\n\n"
                         + "\n".join(bad[:8]), parent=win)
+                    return
+                changed = [w for w, r in new_fixes.items() if fixes.get(w) != r]
+                win.configure(cursor="watch")
+                win.update()
+                warnings = fix_warnings(self.output_dir(), new_fixes, changed)
+                win.configure(cursor="")
+                if warnings and not messagebox.askyesno(
+                        "Check these fixes",
+                        "\n\n".join(f"• {w}" for w in warnings[:8])
+                        + ("\n\n…and more." if len(warnings) > 8 else "")
+                        + "\n\nSave anyway?", icon="warning", parent=win):
                     return
                 try:
                     T.write_vocabulary(self.output_dir(), new_words, new_fixes)

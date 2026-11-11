@@ -6,6 +6,23 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-11-11
+
+### Added
+- **Find repeats** (Settings → Vocabulary → Jingles, ads, songs → **Find
+  repeats…**): compares your newest recordings in the Inbox (up to 30) and
+  lists audio that aired more than once — jingles, station IDs, ads, songs —
+  with how long it is, how often it aired and its transcript text. **Save…**
+  opens the save window with the times and text filled in; type the correct
+  text once and it's used in every new file, and can be written straight
+  into the transcripts where it aired. About 5 seconds per hour of audio.
+- **Warnings on risky fixes.** Before a fix is saved (Vocabulary window, or
+  right-click → Correct → Always), the program checks it: if the word is
+  already common in your transcripts or very short, it may be a real word
+  that the fix would also change; and if one fix undoes another
+  (`A = B` and `B = C`), it says so. You can still save it anyway, or keep
+  a correction to just that transcript.
+
 ## [1.20.0] - 2026-11-11
 
 ### Changed
