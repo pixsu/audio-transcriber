@@ -2427,38 +2427,43 @@ def build_app_class():
 
             win = ctk.CTkToplevel(self)
             win.title("Vocabulary")
-            win.geometry("620x560")
+            win.geometry("820x600")
+            win.minsize(640, 460)
             win.transient(self)
             win.after(100, win.grab_set)
-            win.grid_columnconfigure((0, 1), weight=1)
+            # Two equal columns, whatever their contents.
+            win.grid_columnconfigure((0, 1), weight=1, uniform="col")
             win.grid_rowconfigure(2, weight=1)
 
-            ctk.CTkLabel(win, text="Names to spell right", font=font(14, "bold"), anchor="w"
-                         ).grid(row=0, column=0, sticky="w", padx=(18, 8), pady=(16, 0))
-            ctk.CTkLabel(win, text="One per line: stations, hosts, sponsors, places.\n"
-                                   "Used as hints, so keep it to real names.",
-                         text_color=GRAY, font=font(11), anchor="w", justify="left"
-                         ).grid(row=1, column=0, sticky="w", padx=(18, 8))
-            word_box = ctk.CTkTextbox(win, font=font(12))
+            def heading(col, title, hint, padx):
+                ctk.CTkLabel(win, text=title, font=font(14, "bold"), anchor="w"
+                             ).grid(row=0, column=col, sticky="w", padx=padx, pady=(16, 0))
+                ctk.CTkLabel(win, text=hint, text_color=GRAY, font=font(11), anchor="w",
+                             justify="left", wraplength=340
+                             ).grid(row=1, column=col, sticky="nw", padx=padx)
+
+            heading(0, "Names to spell right",
+                    "One per line: stations, hosts, sponsors, places. Used as hints, so "
+                    "keep it to real names.", (18, 8))
+            heading(1, "Fixes",
+                    "One per line:  wrong = right. Whole words, any capitals.\n"
+                    "e.g.  Love rate = Love Radio", (8, 18))
+            word_box = ctk.CTkTextbox(win, font=font(12), wrap="none")
             word_box.grid(row=2, column=0, sticky="nsew", padx=(18, 8), pady=8)
             word_box.insert("1.0", "\n".join(words))
-
-            ctk.CTkLabel(win, text="Fixes", font=font(14, "bold"), anchor="w"
-                         ).grid(row=0, column=1, sticky="w", padx=(8, 18), pady=(16, 0))
-            ctk.CTkLabel(win, text="One per line:  wrong = right\n"
-                                   "Whole words, any capitals. e.g.  Love rate = Love Radio",
-                         text_color=GRAY, font=font(11), anchor="w", justify="left"
-                         ).grid(row=1, column=1, sticky="w", padx=(8, 18))
-            fix_box = ctk.CTkTextbox(win, font=font(12))
+            fix_box = ctk.CTkTextbox(win, font=font(12), wrap="none")
             fix_box.grid(row=2, column=1, sticky="nsew", padx=(8, 18), pady=8)
             fix_box.insert("1.0", "\n".join(f"{k} = {v}" for k, v in fixes.items()))
 
-            note = ctk.CTkLabel(win, text="Shared by every PC using this Transcripts folder. "
-                                          "Applies to files transcribed from now on.",
-                                text_color=GRAY, font=font(11), anchor="w")
-            note.grid(row=3, column=0, sticky="w", padx=18)
-            bar = ctk.CTkFrame(win, fg_color="transparent")
-            bar.grid(row=3, column=1, sticky="e", padx=18, pady=14)
+            # Bottom: note on the left (wraps), buttons on the right.
+            footer = ctk.CTkFrame(win, fg_color="transparent")
+            footer.grid(row=3, column=0, columnspan=2, sticky="ew", padx=18, pady=(4, 14))
+            bar = ctk.CTkFrame(footer, fg_color="transparent")
+            bar.pack(side="right")
+            ctk.CTkLabel(footer, text="Shared by every PC using this Transcripts folder. "
+                                      "Applies to files transcribed from now on.",
+                         text_color=GRAY, font=font(11), anchor="w", justify="left",
+                         wraplength=520).pack(side="left", fill="x", expand=True)
 
             def save():
                 new_words = [w.strip() for w in word_box.get("1.0", "end").splitlines()

@@ -6,6 +6,13 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.19.1] - 2026-11-11
+
+### Fixed
+- Vocabulary window: the two lists are equal width, the hints and the note
+  at the bottom no longer get cut off or covered by the buttons, and long
+  fixes stay on one line.
+
 ## [1.19.0] - 2026-11-11
 
 ### Changed
