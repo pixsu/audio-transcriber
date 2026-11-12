@@ -6,6 +6,21 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.29.2] - 2026-11-12
+
+### Fixed
+- **No more invented "Thank you." lines.** Whisper sometimes writes
+  "Thank you.", "Thanks", "you" or "Terima kasih" over music or in otherwise empty
+  stretches. These are now removed when they're over music or have no other
+  speech within 5 seconds. A DJ really saying "thank you" mid-conversation
+  is kept.
+- **Lines stuck repeating are joined.** 3 or more identical lines in a row
+  (e.g. "pangalang" five times) become one line covering all of them:
+  "pangalang (×5)". A lyric sung twice, or repeated later in the song, is
+  left as it is.
+- **Lines with no words** ("...", "…") are dropped. The time they covered is
+  labelled like any other pause (music, no clear words, and so on).
+
 ## [1.29.1] - 2026-11-12
 
 ### Changed

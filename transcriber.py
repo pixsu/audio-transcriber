@@ -35,7 +35,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.29.1"
+__version__ = "1.29.2"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -695,6 +695,8 @@ def strip_foreign_script(text: str) -> str:
 # Short lines Whisper tends to invent over instrumental music. Dropped only
 # when they come from the second pass (which re-reads music-only stretches).
 FILLER_LINES = {"thank you", "thanks", "thank you very much", "thank you so much",
+                "you", "bye", "bye bye", "thank you bye",
+                "terima kasih", "terima kasih banyak",  # Malay "thank you", also invented
                 "music", "intro music",
                 "outro music", "background music", "instrumental", "applause"}
 
@@ -757,6 +759,57 @@ def shorten_loop(text: str) -> str:
     after = " ".join(words[i + reps * size:])
     out = ", ".join([phrase] * 3) + "…"
     return " ".join(p for p in (before, out, after) if p)
+
+
+FILLER_NEIGHBOUR_SECONDS = 5.0  # real speech this close keeps a "Thank you"
+
+
+def drop_invented_fillers(found, music=None):
+    """Remove short filler lines ("Thank you.", "you") that Whisper invents
+    over music or in otherwise empty stretches. One is kept when it's not
+    over music and other speech is close by: a DJ really saying "thank you"
+    in a conversation. found: sorted [(start, end, text)]."""
+    import music_detect
+    real = [(a, b) for a, b, t in found if not is_filler(t)]
+    kept, dropped = [], []
+    for a, b, text in found:
+        if is_filler(text):
+            over_music = music is not None and (
+                music_detect.is_music(music, a - 1, b + 1)
+                or music_detect.describe_empty(music, a - 1, b + 1) == "(music, no clear words)")
+            near = any(ra - FILLER_NEIGHBOUR_SECONDS <= b and rb + FILLER_NEIGHBOUR_SECONDS >= a
+                       for ra, rb in real)
+            if over_music or not near:
+                dropped.append((a, b, text))
+                continue
+        kept.append((a, b, text))
+    return kept, dropped
+
+
+REPEAT_GAP_SECONDS = 3.0
+
+
+def merge_repeated_lines(found):
+    """3+ identical lines in a row (Whisper stuck, or a chant) become one
+    line covering all of them: "pangalang (×5)". found: sorted
+    [(start, end, text)]. Returns (lines, how many were merged away)."""
+    def norm(t):
+        return " ".join(re.sub(r"[^\w\s]", "", t.lower()).split())
+    out, merged, i = [], 0, 0
+    while i < len(found):
+        a, b, text = found[i]
+        j = i + 1
+        while (j < len(found) and norm(found[j][2]) == norm(text) and norm(text)
+               and found[j][0] - found[j - 1][1] <= REPEAT_GAP_SECONDS):
+            j += 1
+        count = j - i
+        if count >= 3:
+            out.append((a, found[j - 1][1], f"{text.rstrip(' .,')} (×{count})"))
+            merged += count - 1
+        else:
+            out.extend(found[i:j])
+        i = j
+    return out, merged
 
 
 def is_hallucination(text: str) -> bool:
@@ -978,7 +1031,9 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
             text = shorten_loop(text)
             if is_stuck_loop(text):  # couldn't be tidied: drop it
                 return None
-        return None if not text or is_hallucination(text) else text
+        if not re.search(r"\w", text or ""):
+            return None  # only dots or dashes ("...", "…"): no words at all
+        return None if is_hallucination(text) else text
 
     found = []  # (start, end, text)
     last_report = time.time()
@@ -1046,6 +1101,16 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
             log.info("   Second pass over %d skipped stretch(es): %d line(s) recovered",
                      len(holes), added)
             found.sort(key=lambda f: f[0])
+
+    # Tidy-up: invented "Thank you." lines and lines stuck repeating.
+    found.sort(key=lambda f: f[0])
+    found, dropped = drop_invented_fillers(found, music)
+    if dropped:
+        log.info("   Removed %d invented filler line(s) (e.g. \"%s\" at %s)", len(dropped),
+                 dropped[0][2], format_timestamp(dropped[0][0]))
+    found, merged = merge_repeated_lines(found)
+    if merged:
+        log.info("   Joined %d repeated line(s)", merged)
 
     # --- one continuous timeline ------------------------------------------
     # Every line starts where the one before ended. Pauses of 3 seconds or
