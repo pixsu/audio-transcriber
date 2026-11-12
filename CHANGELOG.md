@@ -6,6 +6,14 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.29.0] - 2026-11-12
+
+### Added
+- **Bigger or smaller transcript text, like a web browser.** In a
+  transcript window, hold Ctrl and turn the mouse wheel to change the text
+  size (9 to 32); Ctrl + 0 puts it back to normal. The size is remembered
+  for the next transcript you open.
+
 ## [1.28.0] - 2026-11-12
 
 ### Added

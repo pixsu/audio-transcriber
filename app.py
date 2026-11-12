@@ -2216,7 +2216,8 @@ def build_app_class():
             # Editing mode buttons
             edit_bar = ctk.CTkFrame(top, fg_color="transparent")
 
-            box = ctk.CTkTextbox(win, font=ctk.CTkFont(family="Consolas", size=13), wrap="word")
+            text_font = ctk.CTkFont(family="Consolas", size=transcript_text_size())
+            box = ctk.CTkTextbox(win, font=text_font, wrap="word")
             box.grid(row=1, column=0, sticky="nsew", padx=16)
             box.insert("1.0", text)
             try:
@@ -2391,6 +2392,27 @@ def build_app_class():
             tk_text.bind("<Button-3>", popup)
             player_ui = self.add_player(win, path, tk_text, editing, status)
             win._player = player_ui  # (for tests)
+            def zoom(step=0):
+                """Ctrl + mouse wheel: bigger / smaller text; Ctrl + 0: back to
+                normal (like a web browser). Remembered for the next window."""
+                size = (TEXT_SIZE_DEFAULT if step == 0 else
+                        max(TEXT_SIZE_MIN, min(TEXT_SIZE_MAX,
+                                               text_font.cget("size") + step)))
+                text_font.configure(size=size)
+                status.configure(text=f"Text size {size}"
+                                      + ("  ·  Ctrl + 0 resets it" if size != TEXT_SIZE_DEFAULT
+                                         else ""))
+                if zoom_save["job"]:
+                    win.after_cancel(zoom_save["job"])
+                zoom_save["job"] = win.after(800, lambda: save_text_size(size))
+                return "break"
+            zoom_save = {"job": None}
+            for widget in (tk_text, win):
+                widget.bind("<Control-MouseWheel>",
+                            lambda e: zoom(1 if e.delta > 0 else -1), add="+")
+            win.bind("<Control-Key-0>", lambda e: zoom(0))
+            win.bind("<Control-KP_0>", lambda e: zoom(0))
+            win._zoom, win._text_font = zoom, text_font  # (for tests)
             win.bind("<Control-e>", correct)
             win.bind("<Control-s>", lambda e: save_edit() if editing["on"] else None)
             win.bind("<Escape>", lambda e: cancel_edit() if editing["on"] else close_window())
@@ -4742,6 +4764,24 @@ def run_setup_wizard():
 
 
 THEMES = (("system", "Same as Windows"), ("light", "Light"), ("dark", "Dark"))
+
+TEXT_SIZE_DEFAULT, TEXT_SIZE_MIN, TEXT_SIZE_MAX = 13, 9, 32
+
+
+def transcript_text_size():
+    """The transcript text size chosen with Ctrl + mouse wheel (13 if none)."""
+    try:
+        size = int(T.read_raw_config().get("transcript_text_size", TEXT_SIZE_DEFAULT))
+    except Exception:
+        size = TEXT_SIZE_DEFAULT
+    return max(TEXT_SIZE_MIN, min(TEXT_SIZE_MAX, size))
+
+
+def save_text_size(size):
+    try:
+        T.update_config({"transcript_text_size": int(size)})
+    except Exception as e:
+        log.debug("Couldn't save the text size: %s", e)
 
 
 def saved_theme():
