@@ -6,6 +6,14 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-11-12
+
+### Added
+- **Volume control in the transcript player.** A small volume slider at the
+  right of the player bar changes only the player's volume (not the whole
+  PC's). Click the speaker to mute or unmute. The setting is remembered
+  for the next transcript you open.
+
 ## [1.26.0] - 2026-11-12
 
 ### Added

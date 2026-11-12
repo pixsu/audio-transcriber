@@ -23,7 +23,7 @@ body:
     attributes:
       label: Version
       description: Shown next to the name at the top of the window (or Menu → About).
-      placeholder: "1.26.0"
+      placeholder: "1.27.0"
     validations:
       required: true
   - type: dropdown

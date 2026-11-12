@@ -989,6 +989,13 @@ class AudioPlayer:
         except OSError:
             pass
 
+    def set_volume(self, percent):
+        """This player's own volume (0-100); the PC's volume isn't touched."""
+        try:
+            self._send(f"setaudio {self.alias} volume to {int(max(0, min(100, percent)) * 10)}")
+        except OSError:
+            pass
+
     def seek(self, seconds):
         seconds = min(max(0.0, seconds), self.length)
         self._send(f"seek {self.alias} to {int(seconds * 1000)}")
@@ -2434,8 +2441,17 @@ def build_app_class():
             # Buttons and labels first (right side), so the slider gets the rest.
             play_btn = ctk.CTkButton(bar, text="▶  Play", width=86, height=28)
             play_btn.pack(side="left", padx=(10, 8), pady=8)
+            # Volume (this player only; remembered for next time)
+            volume = {"value": float(self.config_raw().get("player_volume", 100) or 0),
+                      "before_mute": 100.0}
+            vol_slider = ctk.CTkSlider(bar, from_=0, to=100, width=80, height=14)
+            vol_slider.set(volume["value"])
+            vol_slider.pack(side="right", padx=(2, 12))
+            vol_icon = ctk.CTkLabel(bar, text="", width=26, cursor="hand2",
+                                    font=ctk.CTkFont(family="Segoe UI Symbol", size=19))
+            vol_icon.pack(side="right", padx=(10, 0))
             loop_box = ctk.CTkCheckBox(bar, text="Loop line", width=20, font=font(12))
-            loop_box.pack(side="right", padx=(6, 12))
+            loop_box.pack(side="right", padx=(6, 4))
             follow_box = ctk.CTkCheckBox(bar, text="Follow audio", width=20, font=font(12))
             follow_box.select()
             follow_box.pack(side="right", padx=6)
@@ -2542,6 +2558,7 @@ def build_app_class():
                 if not hasattr(self, "players"):
                     self.players = {}
                 self.players[str(win)] = state["player"]
+                state["player"].set_volume(volume["value"])
                 slider.configure(to=max(1.0, length()))
                 show_time(0)
 
@@ -2631,6 +2648,35 @@ def build_app_class():
                 if loop_box.get() and state["line"] is not None:
                     state["loop"] = state["line"]
 
+            def show_volume():
+                v = volume["value"]
+                vol_icon.configure(text="🔇" if v <= 0 else "🔉" if v < 50 else "🔊")
+
+            def set_volume(v, remember=False):
+                volume["value"] = float(v)
+                if state["player"] is not None:
+                    state["player"].set_volume(v)
+                show_volume()
+                if remember:
+                    try:
+                        T.update_config({"player_volume": round(volume["value"])})
+                    except Exception:
+                        pass
+
+            def toggle_mute(event=None):
+                if volume["value"] > 0:
+                    volume["before_mute"] = volume["value"]
+                    target = 0.0
+                else:
+                    target = volume["before_mute"] or 100.0
+                vol_slider.set(target)
+                set_volume(target, remember=True)
+
+            vol_slider.configure(command=set_volume)
+            vol_slider.bind("<ButtonRelease-1>",
+                            lambda e: set_volume(vol_slider.get(), remember=True), add="+")
+            vol_icon.bind("<Button-1>", toggle_mute)
+            show_volume()
             play_btn.configure(command=toggle)
             loop_box.configure(command=loop_changed)
             slider.configure(command=lambda v: show_time(v) if state["dragging"] else None)
@@ -2687,7 +2733,8 @@ def build_app_class():
             ui.update(ready=True, play_line=play_line, toggle=toggle, state=state,
                       on_double=on_double,
                       slider=slider, loop_box=loop_box, follow_box=follow_box,
-                      time_label=time_label, play_btn=play_btn)
+                      time_label=time_label, play_btn=play_btn, vol_slider=vol_slider,
+                      vol_icon=vol_icon, set_volume=set_volume, toggle_mute=toggle_mute)
             return ui
 
         # ------------------------------------------------------------- jingles
