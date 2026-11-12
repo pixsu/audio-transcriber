@@ -6,6 +6,24 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.26.0] - 2026-11-12
+
+### Added
+- **Listen while you check a transcript.** The transcript window has a
+  player bar: Play / Pause, a slider to jump anywhere, and the time
+  (e.g. 9:45 / 1:00:29). It uses Windows' own media player, so nothing extra
+  is installed, and it plays the recording straight from the Inbox
+  (network folders too).
+  - **Click a line to hear it** from that line's start. A double-click still
+    just selects a word to correct, and clicks don't play while editing.
+    Right-click → Play from here works too.
+  - **Follow audio:** the line being played is highlighted and the window
+    scrolls with it (untick to scroll freely).
+  - **Loop line:** repeats the line you clicked, so you can listen to a hard
+    word several times before correcting it.
+  - Space plays and pauses. One transcript plays at a time, and playing a
+    jingle preview pauses it.
+
 ## [1.25.4] - 2026-11-12
 
 ### Changed

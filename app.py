@@ -939,6 +939,76 @@ class DetailsCache:
                 self.version += 1
 
 
+def double_click_ms():
+    """Windows' double-click time (usually 500 ms)."""
+    try:
+        return int(ctypes.windll.user32.GetDoubleClickTime())
+    except Exception:
+        return 500
+
+
+class AudioPlayer:
+    """Plays a recording with Windows' own media player (MCI): no extra
+    software, plays MP3 and WAV straight from the (network) folder, can jump
+    anywhere and says where it is. Use it from the window's thread only."""
+
+    _count = 0
+
+    def __init__(self, path):
+        AudioPlayer._count += 1
+        self.alias = f"transcriptplayer{AudioPlayer._count}"
+        self.path = str(path)
+        self._send(f'open "{self.path}" type mpegvideo alias {self.alias}')
+        try:
+            self._send(f"set {self.alias} time format milliseconds")
+            self.length = int(self._send(f"status {self.alias} length") or 0) / 1000
+        except OSError:
+            self.close()
+            raise
+
+    @staticmethod
+    def _send(command):
+        out = ctypes.create_unicode_buffer(256)
+        err = ctypes.windll.winmm.mciSendStringW(command, out, 255, 0)
+        if err:
+            msg = ctypes.create_unicode_buffer(256)
+            ctypes.windll.winmm.mciGetErrorStringW(err, msg, 255)
+            raise OSError(msg.value or f"media error {err}")
+        return out.value
+
+    def play(self, start=None):
+        if start is None:
+            self._send(f"play {self.alias}")
+        else:
+            start = min(max(0.0, start), max(0.0, self.length - 0.1))
+            self._send(f"play {self.alias} from {int(start * 1000)}")
+
+    def pause(self):
+        try:
+            self._send(f"pause {self.alias}")
+        except OSError:
+            pass
+
+    def seek(self, seconds):
+        seconds = min(max(0.0, seconds), self.length)
+        self._send(f"seek {self.alias} to {int(seconds * 1000)}")
+
+    def position(self):
+        return int(self._send(f"status {self.alias} position") or 0) / 1000
+
+    def playing(self):
+        try:
+            return self._send(f"status {self.alias} mode") == "playing"
+        except OSError:
+            return False
+
+    def close(self):
+        try:
+            self._send(f"close {self.alias}")
+        except OSError:
+            pass
+
+
 def format_clock(seconds):
     seconds = int(round(seconds))
     h, rest = divmod(seconds, 3600)
@@ -2105,8 +2175,8 @@ def build_app_class():
 
             top = ctk.CTkFrame(win, fg_color="transparent")
             top.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 6))
-            READ_HINT = ("Wrong word? Double-click it, then right-click → Correct.  "
-                         "Bigger changes: Edit.")
+            READ_HINT = ("Click a line to hear it. Wrong word? Double-click it, "
+                         "right-click → Correct.")
             EDIT_HINT = ("Editing: type, delete, or press Enter to split a line. "
                          "Click Save when done.")
             hint = ctk.CTkLabel(top, text=READ_HINT, text_color=GRAY, font=font(12), anchor="w")
@@ -2133,7 +2203,7 @@ def build_app_class():
             tk_text.tag_configure("fixed", background="#2e6b3f")
 
             status = ctk.CTkLabel(win, text="", text_color=GRAY, font=font(11), anchor="w")
-            status.grid(row=2, column=0, sticky="ew", padx=16, pady=(6, 12))
+            status.grid(row=3, column=0, sticky="ew", padx=16, pady=(2, 10))
 
             def selected_word(event=None):
                 try:
@@ -2281,6 +2351,10 @@ def build_app_class():
                                          win, path, word, status, reload))
                 else:
                     menu.add_command(label="Select a word first", state="disabled")
+                if player_ui.get("ready"):
+                    line = int(tk_text.index(f"@{event.x},{event.y}").split(".")[0])
+                    menu.add_command(label="Play from here",
+                                     command=lambda: player_ui["play_line"](line))
                 menu.add_separator()
                 menu.add_command(label="Save as jingle / ad / song...",
                                  command=lambda: self.save_as_jingle(win, path, tk_text, status,
@@ -2290,6 +2364,8 @@ def build_app_class():
                 menu.tk_popup(event.x_root, event.y_root)
 
             tk_text.bind("<Button-3>", popup)
+            player_ui = self.add_player(win, path, tk_text, editing, status)
+            win._player = player_ui  # (for tests)
             win.bind("<Control-e>", correct)
             win.bind("<Control-s>", lambda e: save_edit() if editing["on"] else None)
             win.bind("<Escape>", lambda e: cancel_edit() if editing["on"] else close_window())
@@ -2322,6 +2398,297 @@ def build_app_class():
                 if first:
                     win.after(150, lambda: tk_text.see(f"{first}.0"))
             return win
+
+        # ------------------------------------------------------ transcript player
+        def pause_players(self):
+            """Pause every transcript window's player (e.g. when a clip plays)."""
+            for player in list(getattr(self, "players", {}).values()):
+                player.pause()
+
+        def add_player(self, win, path, tk_text, editing, status):
+            """A player bar under a transcript: play/pause, position slider and
+            time; click a line to hear it; the line being played is highlighted
+            and followed; loop one line. Returns a few hooks for the window."""
+            import bisect
+            ui = {"ready": False}
+            source = self.source_of.get(path.name.lower()) or self.guess_source(path)
+            audio_path = (self.engine.inbox / source) if (source and self.engine.inbox) else None
+            bar = ctk.CTkFrame(win, corner_radius=8, fg_color=("gray90", "gray17"))
+            bar.grid(row=2, column=0, sticky="ew", padx=16, pady=(8, 0))
+            if not audio_path or not audio_path.exists():
+                ctk.CTkLabel(bar, text="The recording for this transcript isn't in the Inbox, "
+                                       "so it can't be played here.",
+                             text_color=GRAY, font=font(11), anchor="w"
+                             ).pack(fill="x", padx=12, pady=8)
+                return ui
+
+            state = {"player": None, "line": None, "loop": None, "dragging": False,
+                     "pending": None, "lines": [], "starts": [], "parsed": 0.0,
+                     "temp": None, "opening": False}
+            info = self.details.get(audio_path) or {}
+            total = float(info.get("duration") or 0)
+            if not total:  # details not read yet: the last time in the transcript
+                ends = re.findall(r"→ (\d\d:\d\d:\d\d)\]", tk_text.get("1.0", "end"))
+                total = float(max((self._seconds(x) for x in ends), default=0))
+
+            # Buttons and labels first (right side), so the slider gets the rest.
+            play_btn = ctk.CTkButton(bar, text="▶  Play", width=86, height=28)
+            play_btn.pack(side="left", padx=(10, 8), pady=8)
+            loop_box = ctk.CTkCheckBox(bar, text="Loop line", width=20, font=font(12))
+            loop_box.pack(side="right", padx=(6, 12))
+            follow_box = ctk.CTkCheckBox(bar, text="Follow audio", width=20, font=font(12))
+            follow_box.select()
+            follow_box.pack(side="right", padx=6)
+            time_label = ctk.CTkLabel(bar, text=f"0:00 / {format_clock(total) if total else '–'}",
+                                      font=ctk.CTkFont(family="Consolas", size=12), width=128)
+            time_label.pack(side="right", padx=(6, 4))
+            slider = ctk.CTkSlider(bar, from_=0, to=max(1.0, total), height=16)
+            slider.set(0)
+            slider.pack(side="left", fill="x", expand=True, padx=4)
+            tk_text.tag_configure("playing", background="#2f5d8f", foreground="white")
+
+            def length():
+                player = state["player"]
+                return player.length if player and player.length else total
+
+            def show_time(pos):
+                time_label.configure(text=f"{format_clock(pos)} / "
+                                          f"{format_clock(length()) if length() else '–'}")
+
+            # ---- which line is where
+            def parse():
+                if time.time() - state["parsed"] < 1.0 and state["lines"]:
+                    return
+                rows = []
+                for n, line in enumerate(tk_text.get("1.0", "end-1c").split("\n"), start=1):
+                    m = self.TIME_RE.match(line)
+                    if m:
+                        rows.append((self._seconds(m.group(1)), self._seconds(m.group(2)), n))
+                rows.sort()
+                state["lines"], state["starts"] = rows, [r[0] for r in rows]
+                state["parsed"] = time.time()
+
+            def line_at(pos):
+                parse()
+                i = bisect.bisect_right(state["starts"], pos) - 1
+                if i >= 0 and pos < state["lines"][i][1] + 1:
+                    return state["lines"][i]
+                return None
+
+            def line_number(n):
+                """The timed line for text line n (or the nearest one above it)."""
+                parse()
+                best = None
+                for row in state["lines"]:
+                    if row[2] <= n and (best is None or row[2] > best[2]):
+                        best = row
+                return best
+
+            # ---- opening the recording (once, on first play)
+            def with_player(then):
+                if state["player"] is not None:
+                    then()
+                    return
+                if state["opening"]:
+                    return
+                try:
+                    state["player"] = AudioPlayer(audio_path)
+                except OSError:
+                    # Windows can't play this file directly: make a plain copy.
+                    state["opening"] = True
+                    play_btn.configure(text="Preparing…", state="disabled")
+
+                    def work():
+                        error = None
+                        try:
+                            import tempfile
+                            import wave
+                            import numpy as np
+                            from faster_whisper.audio import decode_audio
+                            audio = decode_audio(str(audio_path))
+                            wav = Path(tempfile.gettempdir()) / (
+                                f"AudioTranscriber-play-{os.getpid()}-{id(win)}.wav")
+                            with wave.open(str(wav), "wb") as w:
+                                w.setnchannels(1)
+                                w.setsampwidth(2)
+                                w.setframerate(16000)
+                                w.writeframes((np.clip(audio, -1, 1) * 32767).astype("<i2")
+                                              .tobytes())
+                            state["temp"] = wav
+                        except Exception as e:
+                            error = str(e) or type(e).__name__
+
+                        def done():
+                            state["opening"] = False
+                            if not win.winfo_exists():
+                                return
+                            play_btn.configure(text="▶  Play", state="normal")
+                            try:
+                                if error:
+                                    raise OSError(error)
+                                state["player"] = AudioPlayer(state["temp"])
+                            except OSError as e:
+                                status.configure(text=f"Couldn't play the recording: {e}")
+                                return
+                            opened()
+                            then()
+                        self.ui_calls.put(done)
+                    threading.Thread(target=work, name="player-prepare", daemon=True).start()
+                    return
+                opened()
+                then()
+
+            def opened():
+                if not hasattr(self, "players"):
+                    self.players = {}
+                self.players[str(win)] = state["player"]
+                slider.configure(to=max(1.0, length()))
+                show_time(0)
+
+            # ---- controls
+            def start_at(seconds):
+                import winsound
+                winsound.PlaySound(None, 0)  # stop a jingle preview, if any
+                if getattr(self, "_playing_button", None) is not None:
+                    try:
+                        self._playing_button.configure(text="▶ Play")
+                    except Exception:
+                        pass
+                    self._playing_button = None
+                for key, other in list(getattr(self, "players", {}).items()):
+                    if key != str(win):
+                        other.pause()  # one transcript plays at a time
+                try:
+                    state["player"].play(seconds)
+                except OSError as e:
+                    status.configure(text=f"Couldn't play: {e}")
+                    return
+                play_btn.configure(text="❚❚  Pause")
+
+            def toggle(event=None):
+                if event is not None and editing["on"]:
+                    return None  # typing a space while editing
+                def go():
+                    player = state["player"]
+                    if player.playing():
+                        player.pause()
+                        play_btn.configure(text="▶  Play")
+                    else:
+                        pos = player.position()
+                        start_at(0 if pos >= player.length - 0.2 else pos)
+                with_player(go)
+                return "break"
+
+            def play_line(n):
+                row = line_number(n)
+                if row is None:
+                    status.configure(text="This line has no time, so it can't be played. "
+                                          "(Turn on Add timestamps in Settings.)")
+                    return
+                state["loop"] = row
+                with_player(lambda: start_at(row[0]))
+
+            def on_release(event):
+                # A single click on a line plays it. Waits a moment so a
+                # double-click (selecting a word to correct) doesn't play.
+                if editing["on"] or state["pending"]:
+                    return
+                try:
+                    if tk_text.tag_ranges("sel"):
+                        return  # selecting words
+                except Exception:
+                    pass
+                n = int(tk_text.index(f"@{event.x},{event.y}").split(".")[0])
+
+                def fire():
+                    state["pending"] = None
+                    if not tk_text.tag_ranges("sel"):
+                        play_line(n)
+                state["pending"] = win.after(double_click_ms() + 30, fire)
+
+            def on_double(event):
+                if state["pending"]:
+                    win.after_cancel(state["pending"])
+                    state["pending"] = None
+
+            def slider_down(event):
+                state["dragging"] = True
+
+            def slider_up(event):
+                state["dragging"] = False
+                target = slider.get()
+                state["loop"] = line_at(target)  # "Loop line" now means the line there
+
+                def go():
+                    if state["player"].playing():
+                        start_at(target)
+                    else:
+                        state["player"].seek(target)
+                    show_time(target)
+                with_player(go)
+
+            def loop_changed():
+                if loop_box.get() and state["line"] is not None:
+                    state["loop"] = state["line"]
+
+            play_btn.configure(command=toggle)
+            loop_box.configure(command=loop_changed)
+            slider.configure(command=lambda v: show_time(v) if state["dragging"] else None)
+            slider.bind("<ButtonPress-1>", slider_down, add="+")
+            slider.bind("<ButtonRelease-1>", slider_up, add="+")
+            tk_text.bind("<ButtonRelease-1>", on_release, add="+")
+            tk_text.bind("<Double-Button-1>", on_double, add="+")
+            tk_text.bind("<space>", toggle, add="+")
+
+            # ---- follow the audio
+            def poll():
+                if not win.winfo_exists():
+                    return
+                player = state["player"]
+                if player is not None:
+                    try:
+                        pos, playing = player.position(), player.playing()
+                    except OSError:
+                        pos, playing = 0.0, False
+                    loop = state["loop"]
+                    if playing and loop_box.get() and loop and (
+                            pos >= loop[1] + 0.4 or pos < loop[0] - 1.5):
+                        start_at(loop[0])  # once more
+                        pos = loop[0]
+                    if not state["dragging"]:
+                        slider.set(pos)
+                        show_time(pos)
+                    if not playing and play_btn.cget("text") != "▶  Play" and \
+                            not state["opening"]:
+                        play_btn.configure(text="▶  Play")
+                    row = line_at(pos)
+                    if row != state["line"]:
+                        tk_text.tag_remove("playing", "1.0", "end")
+                        if row is not None:
+                            tk_text.tag_add("playing", f"{row[2]}.0", f"{row[2]}.end")
+                            if follow_box.get() and playing:
+                                tk_text.see(f"{row[2]}.0")
+                        state["line"] = row
+                win.after(200, poll)
+            win.after(200, poll)
+
+            def cleanup(event):
+                if event.widget is not win:
+                    return
+                getattr(self, "players", {}).pop(str(win), None)
+                if state["player"] is not None:
+                    state["player"].close()
+                if state["temp"]:
+                    try:
+                        os.remove(state["temp"])
+                    except OSError:
+                        pass
+            win.bind("<Destroy>", cleanup, add="+")
+            ui.update(ready=True, play_line=play_line, toggle=toggle, state=state,
+                      on_double=on_double,
+                      slider=slider, loop_box=loop_box, follow_box=follow_box,
+                      time_label=time_label, play_btn=play_btn)
+            return ui
 
         # ------------------------------------------------------------- jingles
         TIME_RE = re.compile(r"\[(?:[A-Z]+ )?(\d\d:\d\d:\d\d) → (\d\d:\d\d:\d\d)\]")
@@ -2382,6 +2749,7 @@ def build_app_class():
             """Play start..end of a recording (Windows' own sound player); the
             button toggles between Play and Stop."""
             import winsound
+            self.pause_players()
             if getattr(self, "_playing_button", None) is not None:
                 winsound.PlaySound(None, 0)
                 old = self._playing_button
