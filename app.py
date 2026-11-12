@@ -260,7 +260,9 @@ class Engine(T.Hooks):
             try:
                 _, waiting, _ = self.transcriber.scan()
                 self.event("queue", waiting=len(waiting),
-                           files=T.sort_queue(waiting, self.transcriber.config["order"]))
+                           files=T.sort_queue(waiting, self.transcriber.config["order"],
+                                              self.transcriber.listed),
+                           listed=self.transcriber.listed)
             except Exception:
                 pass
         worked = time.time() - self._file_started - self._paused_for
@@ -291,11 +293,15 @@ class Engine(T.Hooks):
             self._update(file=None, percent=0.0, eta=None)
             self.events.put((kind, data))
         elif kind == "queue":
-            items = []
+            items, listed = [], data.get("listed") or {}
             for p in data["files"]:
                 if p.name == self.state["file"]:
                     continue
-                items.append((p.name, T.get_size(p) or 0, T.arrival_time(p)))
+                hit = listed.get(p.name)  # from the scan's folder listing
+                if hit:
+                    items.append((p.name, hit[1], max(hit[2], hit[3])))
+                else:
+                    items.append((p.name, T.get_size(p) or 0, T.arrival_time(p)))
             with self.lock:
                 first = [i for n in self.priority for i in items if i[0] == n]
                 items = first + [i for i in items if i not in first]
@@ -880,12 +886,36 @@ class DetailsCache:
         self.todo = queue.Queue()
         self.queued = set()
         self.version = 0  # goes up whenever new details arrive
+        # path -> (when asked, stat result): the window asks about the same
+        # files several times a second, which on a network folder is one
+        # request each time.
+        self.stats = {}
         threading.Thread(target=self._work, name="details", daemon=True).start()
 
-    def get(self, path, reader=probe_media):
+    STAT_SECONDS = 10
+
+    def know(self, path, st):
+        """A file's size/dates already known (e.g. from a folder listing)."""
+        with self.lock:
+            self.stats[str(path).lower()] = (time.monotonic(), st)
+
+    def _stat(self, path):
+        key, now = str(path).lower(), time.monotonic()
+        with self.lock:
+            hit = self.stats.get(key)
+        if hit is not None and now - hit[0] < self.STAT_SECONDS:
+            return hit[1]
         try:
             st = path.stat()
         except OSError:
+            st = None
+        with self.lock:
+            self.stats[key] = (now, st)
+        return st
+
+    def get(self, path, reader=probe_media):
+        st = self._stat(path)
+        if st is None:
             return None
         key = (reader.__name__, str(path).lower(), st.st_size, int(st.st_mtime))
         with self.lock:
@@ -3526,8 +3556,13 @@ def build_app_class():
             waiting = len(s["queue"])
             waiting_text = f"{waiting} waiting"
             if waiting and self.engine.inbox:
-                infos = [self.details.get(self.engine.inbox / q[0]) for q in s["queue"][:500]]
-                total = sum((i or {}).get("duration", 0) for i in infos)
+                memo_key = (tuple(q[0] for q in s["queue"][:500]), self.details_stamp)
+                if getattr(self, "_waiting_total", (None, 0))[0] != memo_key:
+                    infos = [self.details.get(self.engine.inbox / q[0])
+                             for q in s["queue"][:500]]
+                    self._waiting_total = (memo_key,
+                                           sum((i or {}).get("duration", 0) for i in infos))
+                total = self._waiting_total[1]
                 if total >= 60:
                     waiting_text += f" ({format_duration(total)} of audio)"
             parts = [waiting_text, f"{self.done_today()} done today"]
@@ -3580,7 +3615,15 @@ def build_app_class():
                 self._progress_mode("indeterminate" if busy else "determinate")
                 if not busy:
                     self.progress.set(0)
-                if phase == "idle" and not s["queue"]:
+                if phase == "idle" and s["queue"]:
+                    # New files wait until they've stopped growing (still
+                    # being recorded or copied); say so instead of "All caught up".
+                    n = len(s["queue"])
+                    self.file_text.configure(text=f"{n} new file{'s' if n != 1 else ''} found")
+                    self.detail_text.configure(
+                        text="They start once they've finished being recorded or copied "
+                             "(about a minute after they stop changing).", text_color=GRAY)
+                elif phase == "idle":
                     self.file_text.configure(text="All caught up")
                     self.detail_text.configure(
                         text="Drop audio files into the Inbox or onto this window, or click "
@@ -3701,7 +3744,8 @@ def build_app_class():
                 self._empty(frame, "The queue is empty",
                             "Files dropped into the Inbox appear here while they wait.")
                 return
-            for i, (name, size, arrived) in enumerate(items):
+            shown = 100  # thousands of rows would freeze the window
+            for i, (name, size, arrived) in enumerate(items[:shown]):
                 row = self._row(frame)
                 ctk.CTkLabel(row, text=f"{i + 1}", width=28, text_color=GRAY
                              ).pack(side="left", padx=(8, 0))
@@ -3718,6 +3762,9 @@ def build_app_class():
                 ctk.CTkLabel(text, text=f"{media_summary(info)}  \u00b7  added "
                                         f"{format_when(arrived)}",
                              anchor="w", text_color=GRAY, font=font(11)).pack(fill="x")
+            if len(items) > shown:
+                ctk.CTkLabel(frame, text=f"…and {len(items) - shown:,} more waiting",
+                             text_color=GRAY, font=font(11)).pack(pady=(8, 4))
 
         def skip_queued(self, name):
             if messagebox.askyesno("Skip this file?",
@@ -3855,7 +3902,10 @@ def build_app_class():
             ghost_button(top, "Send report", self.send_report, width=100
                          ).pack(side="right", padx=(8, 0))
             items = sorted(issues.items(), key=lambda kv: kv[1][2], reverse=True)
-            for name, (kind, reason, when) in items:
+            if len(items) > 100:  # thousands of rows would freeze the window
+                ctk.CTkLabel(frame, text=f"Showing the newest 100 of {len(items):,}",
+                             text_color=GRAY, font=font(11), anchor="w").pack(fill="x", padx=8)
+            for name, (kind, reason, when) in items[:100]:
                 row = self._row(frame)
                 ctk.CTkButton(row, text="Retry", width=64, height=26,
                               command=lambda n=name: self.retry_one(n)
@@ -3910,11 +3960,25 @@ def build_app_class():
         def scan_completed(self):
             self.last_completed_scan = time.time()
             try:
-                files = [p for p in self.output_dir().glob("*.txt") if not p.name.startswith(".")]
-                # By when each was transcribed (its 'created' date), so
-                # correcting old transcripts doesn't make them look new.
-                self.completed = sorted(((T.created_time(p), p) for p in files),
-                                        key=lambda mp: mp[0], reverse=True)
+                # One folder listing (it carries every file's dates), not one
+                # network request per transcript.
+                found = []
+                with os.scandir(self.output_dir()) as entries:
+                    for e in entries:
+                        if e.name.startswith(".") or not e.name.lower().endswith(".txt"):
+                            continue
+                        try:
+                            if not e.is_file():
+                                continue
+                            st = e.stat()
+                        except OSError:
+                            continue
+                        path = Path(e.path)
+                        self.details.know(path, st)
+                        # By when each was transcribed (its 'created' date), so
+                        # correcting old transcripts doesn't make them look new.
+                        found.append((getattr(st, "st_birthtime", st.st_ctime), path))
+                self.completed = sorted(found, key=lambda mp: mp[0], reverse=True)
             except OSError:
                 self.completed = []
             try:

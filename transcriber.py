@@ -35,7 +35,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.25.3"
+__version__ = "1.25.4"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -1137,22 +1137,63 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
 # Folder scanning
 # ---------------------------------------------------------------------------
 
+def list_audio_entries(input_dir: Path, file_types) -> dict:
+    """Audio/video files directly in input_dir (no subfolders), from ONE
+    folder listing: name -> (path, size, modified, created).
+
+    On a network folder, asking about each file separately costs a request
+    per file (thousands for a big archive); the listing already carries
+    all of this."""
+    out = {}
+    if not input_dir.is_dir():
+        return out
+    with os.scandir(input_dir) as entries:
+        for e in entries:
+            if Path(e.name).suffix.lower() not in file_types:
+                continue
+            try:
+                if not e.is_file():
+                    continue
+                st = e.stat()  # from the listing itself on Windows (no extra request)
+            except OSError:
+                continue
+            out[e.name] = (Path(e.path), st.st_size, st.st_mtime,
+                           getattr(st, "st_birthtime", st.st_ctime))
+    return out
+
+
 def list_audio_files(input_dir: Path, file_types: set) -> list:
     """Audio/video files directly in input_dir (no subfolders), sorted by name."""
-    if not input_dir.is_dir():
-        return []
-    files = [p for p in input_dir.iterdir()
-             if p.is_file() and p.suffix.lower() in file_types]
-    return sorted(files, key=lambda p: p.name.lower())
+    return sorted((v[0] for v in list_audio_entries(input_dir, file_types).values()),
+                  key=lambda p: p.name.lower())
 
 
-def arrival_time(path: Path) -> float:
+def folder_listing(folder: Path) -> dict:
+    """Every file in a folder from one listing: lowercase name -> modified time."""
+    out = {}
+    if not folder.is_dir():
+        return out
+    with os.scandir(folder) as entries:
+        for e in entries:
+            try:
+                if e.is_file():
+                    out[e.name.lower()] = e.stat().st_mtime
+            except OSError:
+                pass
+    return out
+
+
+def arrival_time(path: Path, listed=None) -> float:
     """When the file appeared in the folder.
 
     Uses the later of "created" and "modified": a copied file keeps its old
     modified date but gets a new created date, while a file that is still
-    being recorded keeps getting a newer modified date.
+    being recorded keeps getting a newer modified date. `listed` (from
+    list_audio_entries) saves asking the folder again.
     """
+    hit = listed.get(path.name) if listed else None
+    if hit:
+        return max(hit[2], hit[3])
     try:
         st = path.stat()
     except OSError:
@@ -1161,13 +1202,13 @@ def arrival_time(path: Path) -> float:
     return max(created, st.st_mtime)
 
 
-def sort_queue(files: list, order: str) -> list:
+def sort_queue(files: list, order: str, listed=None) -> list:
     """Order files for processing according to the "order" setting."""
     if order == "oldest_first":
-        return sorted(files, key=arrival_time)
+        return sorted(files, key=lambda p: arrival_time(p, listed))
     if order == "name":
         return sorted(files, key=lambda p: p.name.lower())
-    return sorted(files, key=arrival_time, reverse=True)  # newest_first
+    return sorted(files, key=lambda p: arrival_time(p, listed), reverse=True)  # newest_first
 
 
 def hide_file(path: Path) -> None:
@@ -1197,6 +1238,7 @@ class OutputNames:
         self.output_dir = output_dir
         self.index_path = output_dir / self.INDEX_NAME
         self.owners = {}  # "song.txt" (lowercase) -> "song.mp3"
+        self.unsaved = False
         try:
             data = json.loads(self.index_path.read_text(encoding="utf-8"))
             self.owners = {k.lower(): v for k, v in data.items()}
@@ -1210,11 +1252,20 @@ class OutputNames:
             return self.output_dir / plain
         return self.output_dir / (audio.name + ".txt")  # song.mp4.txt
 
-    def record(self, txt: Path, audio: Path) -> None:
-        """Record that txt was made from audio."""
+    def record(self, txt: Path, audio: Path, save: bool = True) -> None:
+        """Record that txt was made from audio. save=False only notes it;
+        save() then writes everything noted in one go (indexing a big
+        archive once instead of rewriting the file per transcript)."""
         if self.owners.get(txt.name.lower()) == audio.name:
             return
         self.owners[txt.name.lower()] = audio.name
+        self.unsaved = True
+        if save:
+            self.save()
+
+    def save(self) -> None:
+        if not self.unsaved:
+            return
         try:
             # Other PCs may share this output folder: merge in what they
             # recorded since we last read the index, so nothing is lost.
@@ -1228,6 +1279,7 @@ class OutputNames:
             tmp.write_text(json.dumps(self.owners, indent=1), encoding="utf-8")
             os.replace(tmp, self.index_path)
             hide_file(self.index_path)
+            self.unsaved = False
         except OSError as e:
             log.warning("Could not save %s: %s", self.index_path.name, e)
 
@@ -1400,13 +1452,22 @@ class Transcriber:
         # first saw that modified time). Used to spot abandoned claims.
         self.claims_seen = {}
         self.started_scanning = False
+        # The last Inbox listing (see list_audio_entries) and, during a scan,
+        # the Transcripts folder listing: lowercase name -> modified time.
+        self.listed = {}
+        self._outputs = None
 
     def is_claimed_by_other_pc(self, txt: Path) -> bool:
         """True if another PC is working on this transcript right now."""
         claim = txt.with_name(txt.name + WorkClaim.SUFFIX)
-        try:
-            mtime = claim.stat().st_mtime
-        except OSError:
+        if self._outputs is not None:
+            mtime = self._outputs.get(claim.name.lower())
+        else:
+            try:
+                mtime = claim.stat().st_mtime
+            except OSError:
+                mtime = None
+        if mtime is None:
             self.claims_seen.pop(claim, None)
             return False
 
@@ -1451,26 +1512,51 @@ class Transcriber:
         """True if this file has no .txt yet, isn't being done by another
         PC, and hasn't already failed here."""
         txt = self.names.path_for(audio)
-        if txt.exists():
+        listing = self._outputs
+        if (txt.name.lower() in listing) if listing is not None else txt.exists():
             # Transcripts made before the index existed: record who owns them,
-            # so a later file with the same name gets its own .txt.
-            self.names.record(txt, audio)
+            # so a later file with the same name gets its own .txt. (Saved
+            # once at the end of the scan.)
+            self.names.record(txt, audio, save=listing is None)
             return False
-        if audio.name in self.failed and self.failed[audio.name] == file_signature(audio):
+        if audio.name in self.failed and self.failed[audio.name] == self.signature(audio):
             return False
         if self.is_claimed_by_other_pc(txt):
             return False
         return True
 
+    RECENT_SECONDS = 6 * 3600  # files created this recently are checked one by one
+
+    def signature(self, audio: Path, exact: bool = False):
+        """(size, modified time) from the last listing, or asked directly.
+
+        A folder listing can show an old size for a file that's still open
+        and being written (Windows updates it lazily). So recently created
+        files (the only ones that can still be recording or copying) are
+        always asked directly; older ones come from the listing."""
+        hit = self.listed.get(audio.name)
+        if hit is None or exact or time.time() - hit[3] < self.RECENT_SECONDS:
+            return file_signature(audio)
+        return (hit[1], hit[2])
+
     def scan(self):
         """Look at the input folder once.
+
+        Each folder is read with one listing (not one request per file), so
+        this stays quick with thousands of recordings on a network share.
 
         Returns (ready, waiting, saw_new_file): files ready to transcribe in
         queue order, all files still to do, and whether a file was seen for
         the first time (so we re-check it soon).
         """
-        all_files = list_audio_files(self.input_dir, self.config["file_types"])
-        waiting = [p for p in all_files if self.needs_work(p)]
+        self.listed = list_audio_entries(self.input_dir, self.config["file_types"])
+        all_files = sorted((v[0] for v in self.listed.values()), key=lambda p: p.name.lower())
+        self._outputs = folder_listing(self.output_dir)
+        try:
+            waiting = [p for p in all_files if self.needs_work(p)]
+        finally:
+            self._outputs = None
+        self.names.save()  # transcripts newly found without an index entry, in one go
         waiting_names = {p.name for p in waiting}
 
         if not self.started_scanning:
@@ -1487,7 +1573,7 @@ class Transcriber:
         now = time.time()
         settle = float(self.config.get("settle_seconds", SETTLE_SECONDS))
         for p in waiting:
-            sig = file_signature(p)
+            sig = self.signature(p)
             previous = self.pending_sizes.get(p.name)
             if previous is None or previous[0] != sig:
                 self.pending_sizes[p.name] = (sig, now)
@@ -1500,7 +1586,7 @@ class Transcriber:
                 ready.append(p)
 
         self.started_scanning = True
-        return sort_queue(ready, self.config["order"]), waiting, saw_new_file
+        return sort_queue(ready, self.config["order"], self.listed), waiting, saw_new_file
 
     def process_one(self, audio: Path, still_waiting: int) -> None:
         """Transcribe one file. A failure is logged and never stops the program."""
@@ -1576,7 +1662,8 @@ class Transcriber:
                 hooks.sleep(interval)
                 continue
             hooks.event("queue", waiting=len(waiting),
-                        files=sort_queue(waiting, self.config["order"]))
+                        files=sort_queue(waiting, self.config["order"], self.listed),
+                        listed=self.listed)
 
             if saw_new_file and not ready:
                 # Something new arrived: look again soon (it starts once it has

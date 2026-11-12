@@ -6,6 +6,30 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.25.4] - 2026-11-12
+
+### Changed
+- **Much lighter on big network folders.** The Inbox and the Transcripts
+  folder are each read with one folder listing per check, instead of
+  asking about every file separately. With 4,900 recordings, a check went
+  from about 9,800 requests to about 20 (to 2 with an old backlog).
+  Recordings created in the last 6 hours are still checked one by one,
+  so files that are still being recorded are never started early.
+- **Indexing an existing archive is quick.** The first time a PC sees
+  thousands of finished transcripts, it saves its index once instead of
+  once per transcript (4,880 writes and 68 s → 1 write and 0.07 s in a
+  test).
+- **The window asks the network less.** The Completed list reads its folder
+  in one listing, file details are remembered for 10 seconds, and the total
+  waiting time is only worked out again when the queue changes.
+
+### Fixed
+- **Thousands of waiting files or issues no longer freeze the window.** The
+  Queue and Issues tabs show the first 100 and how many more there are.
+- **New files no longer show "All caught up" while they wait.** The status
+  card says how many new files were found and that they start once they've
+  finished being recorded or copied.
+
 ## [1.25.3] - 2026-11-12
 
 ### Fixed
