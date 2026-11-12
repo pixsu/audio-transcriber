@@ -6,6 +6,12 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-11-12
+
+### Added
+- **Choose dark or light.** Menu → Theme: Same as Windows (the default),
+  Light, or Dark. It changes straight away and is remembered on this PC.
+
 ## [1.27.0] - 2026-11-12
 
 ### Added

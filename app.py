@@ -1436,6 +1436,14 @@ def build_app_class():
             self.menu.add_command(label="Create problem report...", command=self.send_report)
             self.menu.add_command(label="Edit config.json (advanced)", command=self.edit_config)
             self.menu.add_separator()
+            # Theme: follow Windows, or always light / always dark.
+            self.theme_var = tk.StringVar(value=saved_theme())
+            theme_menu = tk.Menu(self.menu, tearoff=False)
+            for value, label in THEMES:
+                theme_menu.add_radiobutton(label=label, value=value, variable=self.theme_var,
+                                           command=lambda v=value: self.set_theme(v))
+            self.menu.add_cascade(label="Theme", menu=theme_menu)
+            self.menu.add_separator()
             self.menu.add_command(label="Check for updates", command=self.check_updates_now)
             self.menu.add_command(label="About", command=self.show_about)
             self.menu.add_command(label="Quit", accelerator="Ctrl+Q", command=self.quit_app)
@@ -2130,6 +2138,16 @@ def build_app_class():
             if not hasattr(self, "tool_windows"):
                 self.tool_windows = {}
             self.tool_windows[key] = win
+
+        def set_theme(self, value):
+            """Dark, light, or follow Windows; remembered for next time."""
+            ctk.set_appearance_mode(value)
+            self.theme_var.set(value)
+            try:
+                T.update_config({"theme": value})
+            except Exception as e:
+                log.warning("Couldn't save the theme: %s", e)
+            log.info("Theme: %s", dict(THEMES).get(value, value))
 
         def unsaved_work(self):
             """Descriptions of open windows with changes that aren't saved."""
@@ -4723,6 +4741,18 @@ def run_setup_wizard():
     return result or None
 
 
+THEMES = (("system", "Same as Windows"), ("light", "Light"), ("dark", "Dark"))
+
+
+def saved_theme():
+    """The theme chosen in the menu ("system" if none, or if unreadable)."""
+    try:
+        value = str(T.read_raw_config().get("theme", "system")).lower()
+    except Exception:
+        value = "system"
+    return value if value in dict(THEMES) else "system"
+
+
 def run_window(start_hidden):
     # Sharper text on high-resolution screens.
     try:
@@ -4760,7 +4790,7 @@ def run_window(start_hidden):
     log.info("%s v%s starting (window)", T.APP_NAME, T.__version__)
 
     import customtkinter as ctk
-    ctk.set_appearance_mode("system")
+    ctk.set_appearance_mode(saved_theme())
     ctk.set_default_color_theme("blue")
 
     engine = Engine(locked_folder=inbox)
