@@ -95,6 +95,13 @@ def save_jingle(output_folder, name: str, text: str, audio: np.ndarray,
     folder.mkdir(parents=True, exist_ok=True)
     base = f"{_safe_name(name)}-{int(time.time())}"
     np.save(folder / f"{base}.npy", fp)
+    # Its sound codes, so new recordings can be checked against every saved
+    # item in one quick lookup.
+    try:
+        c, l = make_codes(clip)
+        np.savez(folder / f"{base}.codes.npz", codes=c[l], pos=np.flatnonzero(l).astype(np.int32))
+    except Exception as e:
+        log.warning("Couldn't save the sound codes: %s", e)
     # A short preview (first 30 s) so it can be played from the list later.
     try:
         import wave
@@ -138,7 +145,12 @@ def load_library(output_folder) -> list:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             fp = np.load(meta_path.with_suffix(".npy"))
             wav = meta_path.with_suffix(".wav")
-            items.append(dict(meta, id=meta_path.stem, fp=fp,
+            codes = None
+            cpath = meta_path.with_name(meta_path.stem + ".codes.npz")
+            if cpath.exists():
+                with np.load(cpath, allow_pickle=False) as z:
+                    codes = (z["codes"], z["pos"])
+            items.append(dict(meta, id=meta_path.stem, fp=fp, codes=codes,
                               preview=str(wav) if wav.exists() else None))
         except (OSError, ValueError) as e:
             log.warning("Skipping damaged jingle %s (%s)", meta_path.name, e)
@@ -148,7 +160,7 @@ def load_library(output_folder) -> list:
 
 def delete_jingle(output_folder, jingle_id: str) -> None:
     folder = library_folder(output_folder)
-    for ext in (".json", ".npy", ".wav"):
+    for ext in (".json", ".npy", ".wav", ".codes.npz"):
         try:
             (folder / f"{jingle_id}{ext}").unlink()
         except FileNotFoundError:
@@ -288,14 +300,18 @@ def _store_name(audio_name: str) -> str:
     return re.sub(r"[^\w\-. ]+", "_", audio_name)[:150] + ".npz"
 
 
-def store_codes(output_folder, audio_path, audio: np.ndarray = None) -> bool:
-    """Save the codes of one recording (decoding it if `audio` isn't given)."""
+def store_codes(output_folder, audio_path, audio: np.ndarray = None, codes=None) -> bool:
+    """Save the codes of one recording (decoding it if `audio` isn't given;
+    `codes` = (codes, loud) if they were already worked out)."""
     folder = Path(output_folder) / STORE_FOLDER
     folder.mkdir(parents=True, exist_ok=True)
-    if audio is None:
-        from faster_whisper.audio import decode_audio
-        audio = decode_audio(str(audio_path))
-    codes, loud = make_codes(audio)
+    if codes is None:
+        if audio is None:
+            from faster_whisper.audio import decode_audio
+            audio = decode_audio(str(audio_path))
+        codes = make_codes(audio)
+    codes, loud = codes
+    seconds = len(audio) / SAMPLE_RATE if audio is not None else len(loud) * CODE_STEP
     try:
         recorded = Path(audio_path).stat().st_mtime
     except OSError:
@@ -303,9 +319,14 @@ def store_codes(output_folder, audio_path, audio: np.ndarray = None) -> bool:
     target = folder / _store_name(Path(audio_path).name)
     tmp = target.with_name(target.stem + ".tmp.npz")
     np.savez(tmp, codes=codes, loud=np.packbits(loud), n=len(loud),
-             name=Path(audio_path).name, recorded=recorded,
-             seconds=len(audio) / SAMPLE_RATE)
+             name=Path(audio_path).name, recorded=recorded, seconds=seconds)
     os.replace(tmp, target)
+    # The file's date = the recording's date, so the newest recordings can be
+    # picked by date alone, without opening every file.
+    try:
+        os.utime(target, (recorded, recorded))
+    except OSError:
+        pass
     return True
 
 
@@ -313,17 +334,37 @@ def has_codes(output_folder, audio_name: str) -> bool:
     return (Path(output_folder) / STORE_FOLDER / _store_name(audio_name)).exists()
 
 
+def _date_old_files(folder: Path) -> None:
+    """One time only: files saved by v1.25 have the date they were saved,
+    not the recording's date. Fix them so picking the newest works."""
+    marker = folder / ".dated"
+    if marker.exists() or not folder.is_dir():
+        return
+    for f in folder.glob("*.npz"):
+        try:
+            with np.load(f, allow_pickle=False) as z:
+                recorded = float(z["recorded"])
+            os.utime(f, (recorded, recorded))
+        except Exception:
+            pass
+    try:
+        marker.write_text("file dates = recording dates", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def load_codes(output_folder, limit: int = 200):
     """[(name, codes, loud), ...] for the newest `limit` stored recordings."""
     folder = Path(output_folder) / STORE_FOLDER
     entries = []
+    _date_old_files(folder)
     try:
-        files = list(folder.glob("*.npz"))
+        dated = [(f.stat().st_mtime, f) for f in folder.glob("*.npz") if ".tmp" not in f.name]
     except OSError:
         return []
-    for f in files:
-        if ".tmp" in f.name:
-            continue
+    # Newest first by file date (= recording date); open only those needed.
+    dated.sort(key=lambda d: -d[0])
+    for _, f in dated[:limit]:
         try:
             with np.load(f, allow_pickle=False) as z:
                 n = int(z["n"])
@@ -603,3 +644,68 @@ def update_text(output_folder, jingle_id: str, text: str) -> None:
         json.dump(meta, f, ensure_ascii=False, indent=1)
     os.replace(tmp, path)
     _cache.clear()
+
+
+
+# --------------------------------------------------------------- fast lookup
+
+LOOKUP_MIN_VOTES = 8   # matching codes needed before a saved item is checked properly
+
+
+def find_jingles_fast(audio: np.ndarray, library: list, file_codes=None, should_stop=None) -> list:
+    """Same result as find_jingles, but quick with a big library: every saved
+    item that has sound codes is looked up at once (one sort), and only the
+    few that line up somewhere get the precise 8-second-piece check, on just
+    that stretch. Items saved before this existed use the old way."""
+    with_codes = [j for j in library if j.get("codes") is not None and len(j["codes"][0])]
+    without = [j for j in library if j not in with_codes]
+    found = find_jingles(audio, without, should_stop) if without else []
+    if not with_codes:
+        return found
+    if file_codes is None:
+        file_codes = make_codes(audio)
+    codes, loud = file_codes
+    fpos = np.flatnonzero(loud).astype(np.int64)
+    fcodes = codes[loud]
+    # All saved items' codes in one sorted table.
+    lib_codes = np.concatenate([j["codes"][0] for j in with_codes])
+    lib_item = np.concatenate([np.full(len(j["codes"][0]), i, np.int64)
+                               for i, j in enumerate(with_codes)])
+    lib_pos = np.concatenate([j["codes"][1].astype(np.int64) for j in with_codes])
+    order = np.argsort(lib_codes, kind="stable")
+    lib_codes, lib_item, lib_pos = lib_codes[order], lib_item[order], lib_pos[order]
+    lo = np.searchsorted(lib_codes, fcodes, side="left")
+    hi = np.searchsorted(lib_codes, fcodes, side="right")
+    hit = hi > lo
+    if not hit.any():
+        return found
+    # Each matching code votes for (item, where the item would start here).
+    reps = (hi - lo)[hit]
+    starts = np.repeat(lo[hit], reps) + (np.arange(reps.sum()) - np.repeat(np.cumsum(reps) - reps, reps))
+    file_at = np.repeat(fpos[hit], reps)
+    item = lib_item[starts]
+    begin = (file_at - lib_pos[starts]) // 25          # 1-second bins
+    key = item * 10_000_000 + (begin + 5_000_000)
+    uniq, counts = np.unique(key, return_counts=True)
+    candidates = {}
+    for k, n in zip(uniq[counts >= LOOKUP_MIN_VOTES], counts[counts >= LOOKUP_MIN_VOTES]):
+        i, b = int(k // 10_000_000), int(k % 10_000_000 - 5_000_000)
+        candidates.setdefault(i, []).append(b * 25 * CODE_STEP)
+    hits = []
+    for i, begins in candidates.items():
+        if should_stop:
+            should_stop()
+        j = with_codes[i]
+        length = float(j.get("seconds") or len(j["fp"]) * FRAME_SECONDS)
+        for b in sorted(set(round(x) for x in begins)):
+            a0 = max(0.0, b - 6.0)
+            a1 = min(len(audio) / SAMPLE_RATE, b + length + 6.0)
+            window = audio[int(a0 * SAMPLE_RATE):int(a1 * SAMPLE_RATE)]
+            for a, e, it, off in find_jingles(window, [j]):
+                hits.append((a + a0, e + a0, it, off))
+    # Merge with the old-way results; drop overlaps (the longer match wins).
+    chosen = []
+    for a, e, it, off in sorted(found + hits, key=lambda h: -(h[1] - h[0])):
+        if all(e <= ca or a >= ce for ca, ce, *_ in chosen):
+            chosen.append((a, e, it, off))
+    return sorted(chosen, key=lambda c: c[0])

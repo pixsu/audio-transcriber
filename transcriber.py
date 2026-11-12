@@ -34,7 +34,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.25.0"
+__version__ = "1.25.1"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -768,6 +768,7 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
     use_vad = config["vad_filter"] and not config.get("label_music")
     source, music, gaps, clips = str(audio_path), None, [], "0"
     jingle_hits = {}  # (start, end) -> (label, text), from the jingle/song library
+    file_codes = None  # sound codes of this recording (worked out once, used twice)
     library = []
     try:
         import jingles
@@ -791,7 +792,9 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
         if library:
             try:
                 names = []
-                for a, b, item, offset in jingles.find_jingles(source, library, hooks.checkpoint):
+                file_codes = jingles.make_codes(source)
+                for a, b, item, offset in jingles.find_jingles_fast(source, library, file_codes,
+                                                                    hooks.checkpoint):
                     a, b = max(0.0, a), min(duration, b)
                     if any(b > ga and a < gb for ga, gb in gaps):
                         continue  # never over dead air
@@ -814,7 +817,8 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
         # with every other recording later (even once the original is gone).
         try:
             import jingles
-            jingles.store_codes(config["output_folder"], audio_path, source)
+            jingles.store_codes(config["output_folder"], audio_path, source,
+                                codes=file_codes if file_codes is not None else None)
         except Exception as e:
             log.debug("   Couldn't store sound codes (%s)", e)
 

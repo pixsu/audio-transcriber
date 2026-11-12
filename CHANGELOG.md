@@ -6,6 +6,25 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.25.1] - 2026-11-12
+
+### Fixed
+- **Find repeats no longer reads every stored fingerprint.** It picks the
+  newest 200 by date and opens only those (0.15 s with 1,000 stored instead
+  of reading them all — about 1.8 GB over the network for a full archive,
+  every 30 minutes, on every PC). Fingerprints saved by 1.25.0 get their
+  dates corrected once.
+
+### Changed
+- **A big jingle library no longer slows transcription down.** Saved
+  jingles, ads and songs now also keep compact sound codes, and each
+  recording is checked against all of them in one lookup; only real
+  candidates get the precise check. With 200 saved items: about 4 seconds
+  per hour of audio instead of about 90. It also no longer "matches" a
+  saved clip with silence or with a song's own repeated melody. Items saved
+  before this version still work the old (slower) way; re-save them to
+  speed them up too.
+
 ## [1.25.0] - 2026-11-11
 
 ### Changed
