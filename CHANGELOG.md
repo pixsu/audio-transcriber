@@ -6,6 +6,18 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.29.1] - 2026-11-12
+
+### Changed
+- **A clean light mode.** White cards on a soft grey window (cards used to be
+  darker than the window), crisp light borders, a deeper blue for buttons,
+  readable tabs (the chosen one is white with dark text), white list rows
+  and text boxes, neutral grey hints, and greyed-out buttons whose text you
+  can still read. Every window uses it: the main window, transcripts,
+  Vocabulary, jingle windows and dropdowns.
+- **Neater switches in both modes.** The knob now sits inside the track,
+  like Windows 11: grey when off, blue when on.
+
 ## [1.29.0] - 2026-11-12
 
 ### Added

@@ -92,7 +92,52 @@ def model_downloaded(size):
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_NAME = "AudioTranscriber"
 
-GREEN, AMBER, BLUE, RED, GRAY = "#2e9e4f", "#d99a00", "#3b8ed0", "#d9534f", "gray"
+GREEN, AMBER, BLUE, RED = "#2e9e4f", "#d99a00", "#3b8ed0", "#d9534f"
+GRAY = ("#6B6B6B", "gray")            # secondary text (light, dark)
+ACCENT = ("#2B72C0", "#1F6AA5")       # main buttons
+ACCENT_HOVER = ("#245F9F", "#144870")
+HAIRLINE = ("#E3E5E8", "gray30")      # thin dividers
+OFF = ("#E3E5E8", "gray30")           # greyed-out button
+
+
+def tune_light_palette():
+    """CustomTkinter's own light colours make cards darker than the window,
+    tabs pale grey on grey and switch knobs dark. Use a clean light palette
+    instead: white cards on a soft grey window, crisp borders, a deeper blue.
+    Dark mode is left exactly as it was."""
+    import customtkinter as ctk
+    theme = ctk.ThemeManager.theme
+
+    def light(widget, **values):
+        for key, value in values.items():
+            dark = theme[widget][key][1] if isinstance(theme[widget][key], list) else value
+            theme[widget][key] = [value, dark]
+
+    text, border = "#1F2328", "#D0D4DA"
+    light("CTk", fg_color="#EDEFF2")
+    light("CTkToplevel", fg_color="#EDEFF2")
+    light("CTkFrame", fg_color="#FFFFFF", top_fg_color="#F6F7F9", border_color="#E3E5E8")
+    light("CTkButton", fg_color=ACCENT[0], hover_color=ACCENT_HOVER[0],
+          border_color=border, text_color="#FFFFFF", text_color_disabled="#9AA1A9")
+    light("CTkLabel", text_color=text)
+    light("CTkEntry", fg_color="#FFFFFF", border_color=border, text_color=text,
+          placeholder_text_color="#8A9099")
+    light("CTkCheckBox", fg_color=ACCENT[0], border_color="#9AA1A9",
+          hover_color=ACCENT_HOVER[0], checkmark_color="#FFFFFF", text_color=text,
+          text_color_disabled="#9AA1A9")
+    light("CTkSwitch", fg_color="#C4C9D0", progress_color=ACCENT[0], button_color="#FFFFFF",
+          button_hover_color="#F3F4F6", text_color=text, text_color_disabled="#9AA1A9")
+    light("CTkSlider", fg_color="#E3E5E8", progress_color=ACCENT[0], button_color=ACCENT[0],
+          button_hover_color=ACCENT_HOVER[0])
+    light("CTkProgressBar", fg_color="#E3E5E8", progress_color=ACCENT[0],
+          border_color="#E3E5E8")
+    light("CTkSegmentedButton", fg_color="#E6E8EB", selected_color="#FFFFFF",
+          selected_hover_color="#FFFFFF", unselected_color="#E6E8EB",
+          unselected_hover_color="#DADDE1", text_color=text, text_color_disabled="#9AA1A9")
+    light("CTkScrollbar", button_color="#C9CED4", button_hover_color="#A8AFB7")
+    light("CTkTextbox", fg_color="#FFFFFF", border_color="#E3E5E8", text_color=text,
+          scrollbar_button_color="#C9CED4", scrollbar_button_hover_color="#A8AFB7")
+    light("CTkScrollableFrame", label_fg_color="#F6F7F9")
 PHASES = {  # phase -> (title, colour)
     "starting": ("Starting", BLUE),
     "loading": ("Loading model", BLUE),
@@ -1206,13 +1251,39 @@ def build_app_class():
     def ghost_button(parent, text, command, width=70, height=26):
         return ctk.CTkButton(parent, text=text, command=command, width=width, height=height,
                              fg_color="transparent", border_width=1,
-                             border_color=("gray70", "gray35"),
-                             text_color=("gray10", "gray90"),
-                             hover_color=("gray85", "gray25"))
+                             border_color=("#D0D4DA", "gray35"),
+                             text_color=("#1F2328", "gray90"),
+                             hover_color=("#EEF0F3", "gray25"))
 
-    FIELD = ("gray97", "gray20")
-    FIELD_HOVER = ("gray92", "gray25")
-    FIELD_BORDER = ("gray75", "gray32")
+    class Switch(ctk.CTkSwitch):
+        """A switch with its knob inside the track (like Windows 11): the
+        ring around the knob takes the track's colour, grey off, blue on."""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, border_width=2, switch_width=40, switch_height=22,
+                             **kwargs)
+            self._ring()
+
+        def _ring(self):
+            theme = ctk.ThemeManager.theme["CTkSwitch"]
+            self.configure(border_color=theme["progress_color"] if self.get()
+                           else theme["fg_color"])
+
+        def select(self, from_variable_callback=False):
+            super().select(from_variable_callback)
+            self._ring()
+
+        def deselect(self, from_variable_callback=False):
+            super().deselect(from_variable_callback)
+            self._ring()
+
+        def toggle(self, event=None):
+            super().toggle(event)
+            self._ring()
+
+    FIELD = ("#FFFFFF", "gray20")
+    FIELD_HOVER = ("#F3F4F6", "gray25")
+    FIELD_BORDER = ("#D0D4DA", "gray32")
     open_popup = []  # the dropdown list that is open, if any
 
     def close_popups(event=None):
@@ -1284,9 +1355,9 @@ def build_app_class():
                 ctk.CTkButton(box, text=value,
                               anchor="w", height=32, corner_radius=6,
                               font=font(13, "bold" if chosen else "normal"),
-                              fg_color=("gray90", "gray24") if chosen else "transparent",
-                              hover_color=("gray85", "gray28"),
-                              text_color=("gray10", "gray92"),
+                              fg_color=("#EEF0F3", "gray24") if chosen else "transparent",
+                              hover_color=("#E5E8EC", "gray28"),
+                              text_color=("#1F2328", "gray92"),
                               command=lambda v=value: self.choose(v)
                               ).pack(fill="x", padx=6, pady=(6 if i == 0 else 1,
                                                              6 if i == last else 0))
@@ -1300,7 +1371,7 @@ def build_app_class():
             top.deiconify()
             self.popup = top
             open_popup.append(self)
-            self.configure(border_color=("#3B8ED0", "#1F6AA5"))
+            self.configure(border_color=ACCENT)
 
         def owns(self, widget):
             """True if a widget is part of this dropdown or its open list."""
@@ -1590,8 +1661,8 @@ def build_app_class():
             return widget
 
         def _switch(self, card, row, text, key, hint=None, command=None):
-            sw = ctk.CTkSwitch(card, text=text,
-                               command=command or (lambda: self.stage(key, bool(sw.get()))))
+            sw = Switch(card, text=text,
+                        command=command or (lambda: self.stage(key, bool(sw.get()))))
             sw.grid(row=row, column=0, columnspan=2, sticky="w", padx=12, pady=(10, 0))
             sw._hint = None
             if hint:
@@ -1626,10 +1697,10 @@ def build_app_class():
             # Apply / Discard bar, always at the bottom of the panel.
             bar = ctk.CTkFrame(outer, fg_color="transparent")
             bar.pack(side="bottom", fill="x", padx=14, pady=(6, 12))
-            ctk.CTkFrame(outer, height=1, fg_color=("gray80", "gray30")
+            ctk.CTkFrame(outer, height=1, fg_color=HAIRLINE
                          ).pack(side="bottom", fill="x", padx=12)
             self.apply_btn = ctk.CTkButton(bar, text="Apply", width=90, height=32,
-                                           text_color_disabled=("gray50", "gray55"),
+                                           text_color_disabled=("#9AA1A9", "gray55"),
                                            command=self.apply_changes)
             self.apply_btn.pack(side="right")
             self.discard_btn = ghost_button(bar, "Discard", self.discard_changes,
@@ -1829,12 +1900,12 @@ def build_app_class():
             if n:
                 self.pending_text.configure(
                     text=f"\u25cf  {n} unsaved change{'s' if n > 1 else ''}", text_color=AMBER)
-                self.apply_btn.configure(state="normal", fg_color=("#3B8ED0", "#1F6AA5"))
+                self.apply_btn.configure(state="normal", fg_color=ACCENT)
                 self.discard_btn.configure(state="normal")
             else:
                 if not self.just_applied:
                     self.pending_text.configure(text="All changes applied", text_color=GRAY)
-                self.apply_btn.configure(state="disabled", fg_color=("gray75", "gray30"))
+                self.apply_btn.configure(state="disabled", fg_color=OFF)
                 self.discard_btn.configure(state="disabled")
 
         def discard_changes(self):
@@ -2460,7 +2531,8 @@ def build_app_class():
             ui = {"ready": False}
             source = self.source_of.get(path.name.lower()) or self.guess_source(path)
             audio_path = (self.engine.inbox / source) if (source and self.engine.inbox) else None
-            bar = ctk.CTkFrame(win, corner_radius=8, fg_color=("gray90", "gray17"))
+            bar = ctk.CTkFrame(win, corner_radius=8, fg_color=("#FFFFFF", "gray17"),
+                               border_width=1, border_color=("#E3E5E8", "gray17"))
             bar.grid(row=2, column=0, sticky="ew", padx=16, pady=(8, 0))
             if not audio_path or not audio_path.exists():
                 ctk.CTkLabel(bar, text="The recording for this transcript isn't in the Inbox, "
@@ -2992,7 +3064,7 @@ def build_app_class():
                     rows = context[max(0, first - 2):first] + clip + context[last + 1:last + 3]
                 else:
                     rows = context[:6]
-                ctx = ctk.CTkFrame(dlg, corner_radius=6, fg_color=("gray92", "gray14"))
+                ctx = ctk.CTkFrame(dlg, corner_radius=6, fg_color=("#F3F4F6", "gray14"))
                 ctx.grid(row=2, column=0, sticky="ew", padx=18, pady=(8, 0))
                 mono = ctk.CTkFont(family="Consolas", size=11)
                 for line, in_clip in rows:
@@ -4006,7 +4078,7 @@ def build_app_class():
             self.pause_btn.configure(
                 text="Resume" if self.engine.paused else "Pause",
                 state="normal" if usable else "disabled",
-                fg_color=("#3B8ED0", "#1F6AA5") if usable else ("gray75", "gray30"))
+                fg_color=ACCENT if usable else OFF)
 
             waiting = len(s["queue"])
             waiting_text = f"{waiting} waiting"
@@ -4186,7 +4258,7 @@ def build_app_class():
                 build(frame, data)
 
         def _row(self, frame):
-            row = ctk.CTkFrame(frame, corner_radius=8, fg_color=("gray92", "gray17"))
+            row = ctk.CTkFrame(frame, corner_radius=8, fg_color=("#F6F7F9", "gray17"))
             row.pack(fill="x", pady=3, padx=2)
             return row
 
@@ -4804,6 +4876,7 @@ def run_window(start_hidden):
         import customtkinter as ctk
         ctk.set_appearance_mode("system")
         ctk.set_default_color_theme("blue")
+        tune_light_palette()
         chosen = run_setup_wizard()
         if not chosen:
             sys.exit(0)  # closed before finishing: ask again next time
@@ -4832,6 +4905,7 @@ def run_window(start_hidden):
     import customtkinter as ctk
     ctk.set_appearance_mode(saved_theme())
     ctk.set_default_color_theme("blue")
+    tune_light_palette()
 
     engine = Engine(locked_folder=inbox)
     app = build_app_class()(engine, start_hidden=start_hidden)
