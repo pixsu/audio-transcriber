@@ -2002,15 +2002,49 @@ def build_app_class():
 
         # ---------------------------------------------------------- vocabulary
         # ------------------------------------------------------ transcript review
+        def unsaved_work(self):
+            """Descriptions of open windows with changes that aren't saved."""
+            out = []
+            for check in list(getattr(self, "unsaved", {}).values()):
+                try:
+                    what = check()
+                except Exception:
+                    what = None
+                if what:
+                    out.append(what)
+            return out
+
+        def track_unsaved(self, win, check):
+            """Register a window's 'what's unsaved?' check until it closes."""
+            if not hasattr(self, "unsaved"):
+                self.unsaved = {}
+            key = str(win)
+            self.unsaved[key] = check
+            win.bind("<Destroy>", lambda e, k=key: self.unsaved.pop(k, None)
+                     if str(e.widget) == k else None, add="+")
+
         def review_transcript(self, path, jump_to=None):
             """Show a transcript; select a wrong word, right-click, correct it."""
             path = Path(path)
+            # One window per transcript: bring the open one to the front.
+            if not hasattr(self, "viewers"):
+                self.viewers = {}
+            open_win = self.viewers.get(str(path).lower())
+            if open_win is not None and open_win.winfo_exists():
+                open_win.deiconify()
+                open_win.lift()
+                open_win.focus_force()
+                return open_win
             try:
                 text = path.read_text(encoding="utf-8")
-            except OSError as e:
+            except (OSError, ValueError) as e:
                 messagebox.showerror("Open transcript", f"Couldn't open:\n{e}", parent=self)
                 return
             win = ctk.CTkToplevel(self)
+            key = str(path).lower()
+            self.viewers[key] = win
+            win.bind("<Destroy>", lambda e, k=key: self.viewers.pop(k, None)
+                     if e.widget is win else None, add="+")
             win.title(path.name)
             win.geometry("860x640")
             win.transient(self)
@@ -2038,6 +2072,10 @@ def build_app_class():
             box = ctk.CTkTextbox(win, font=ctk.CTkFont(family="Consolas", size=13), wrap="word")
             box.grid(row=1, column=0, sticky="nsew", padx=16)
             box.insert("1.0", text)
+            try:
+                shown = {"mtime": path.stat().st_mtime}  # version on screen
+            except OSError:
+                shown = {"mtime": None}
             box.configure(state="disabled")  # read-only; selecting still works
             tk_text = box._textbox
             tk_text.tag_configure("fixed", background="#2e6b3f")
@@ -2058,7 +2096,12 @@ def build_app_class():
                 return tk_text.get(start, end).strip()
 
             def reload(highlight=None):
-                new_text = path.read_text(encoding="utf-8")
+                try:
+                    new_text = path.read_text(encoding="utf-8")
+                    shown["mtime"] = path.stat().st_mtime
+                except (OSError, ValueError) as e:
+                    status.configure(text=f"Couldn't reload: {e}")
+                    return
                 y = tk_text.yview()[0]
                 box.configure(state="normal")
                 box.delete("1.0", "end")
@@ -2081,8 +2124,18 @@ def build_app_class():
             def current_text():
                 return tk_text.get("1.0", "end-1c")
 
+            def file_time():
+                try:
+                    return path.stat().st_mtime
+                except OSError:
+                    return None
+
             def start_edit():
-                editing.update(on=True, original=current_text())
+                # Reload first if the file changed since it was shown, so the
+                # edit starts from the latest text.
+                if not editing["on"] and file_time() != shown["mtime"]:
+                    reload()
+                editing.update(on=True, original=current_text(), mtime=file_time())
                 tk_text.tag_remove("fixed", "1.0", "end")
                 box.configure(state="normal")
                 tk_text.configure(undo=True, autoseparators=True, maxundo=-1)
@@ -2101,6 +2154,13 @@ def build_app_class():
                 hint.configure(text=READ_HINT)
 
             def save_edit():
+                if file_time() != editing.get("mtime") and not messagebox.askyesno(
+                        "Transcript changed meanwhile",
+                        "This transcript was changed by something else while you were "
+                        "editing (for example a fix applied to all transcripts, or a saved "
+                        "jingle).\n\nSaving now replaces those changes with your version. "
+                        "Save anyway?", icon="warning", parent=win):
+                    return False
                 new_text = current_text().rstrip("\n") + "\n"
                 tmp = path.with_name(path.name + f".{T.HOSTNAME}.edit")
                 try:
@@ -2111,6 +2171,7 @@ def build_app_class():
                     messagebox.showerror("Save transcript", f"Couldn't save:\n{e}", parent=win)
                     return False
                 log.info("Transcript edited: %s", path.name)
+                shown["mtime"] = file_time()
                 stop_edit()
                 status.configure(text=f"Saved  ·  {datetime.now():%H:%M}")
                 self.last_completed_scan = 0.0  # refresh word counts
@@ -2183,6 +2244,16 @@ def build_app_class():
             win.protocol("WM_DELETE_WINDOW", close_window)
             win.after(100, win.focus_force)
             win._start_edit, win._save_edit, win._text = start_edit, save_edit, tk_text  # tests
+            win._close = close_window
+            self.track_unsaved(win, lambda: f"Edits to {path.name}" if editing["on"]
+                               and current_text() != editing["original"] else None)
+
+            def refresh_if_changed(event=None):
+                # Coming back to a read-only window: show the latest text.
+                if not editing["on"] and file_time() != shown["mtime"]:
+                    reload()
+            win.bind("<FocusIn>", lambda e: refresh_if_changed() if e.widget is win else None,
+                     add="+")
             if jump_to:
                 # Scroll to the moment and highlight its lines.
                 a, b = jump_to
@@ -3047,7 +3118,12 @@ def build_app_class():
 
         def edit_vocabulary(self):
             """A window with two lists: names to spell right, and fixes."""
-            vocab = T.read_vocabulary(self.output_dir())
+            try:
+                vocab = T.read_vocabulary(self.output_dir(), strict=True)
+            except OSError as e:
+                messagebox.showerror("Vocabulary", f"Couldn't open the names and fixes: {e}"
+                                     "\n\nTry again in a moment.", parent=self)
+                return
             words, fixes = vocab["word_list"], vocab["replacements"]
 
             win = ctk.CTkToplevel(self)
@@ -3120,7 +3196,7 @@ def build_app_class():
                         + "\n\nSave anyway?", icon="warning", parent=win):
                     return
                 try:
-                    T.write_vocabulary(self.output_dir(), new_words, new_fixes)
+                    T.save_vocabulary_edits(self.output_dir(), vocab, new_words, new_fixes)
                 except Exception as e:
                     messagebox.showerror("Vocabulary", f"Couldn't save:\n{e}", parent=win)
                     return
@@ -3129,10 +3205,29 @@ def build_app_class():
                 self.refresh_vocab_summary()
                 win.destroy()
 
-            ghost_button(bar, "Cancel", win.destroy, width=80, height=30).pack(side="right")
+            shown_text = (word_box.get("1.0", "end"), fix_box.get("1.0", "end"))
+
+            def changed():
+                return (word_box.get("1.0", "end"), fix_box.get("1.0", "end")) != shown_text
+
+            def close(event=None):
+                if changed():
+                    answer = messagebox.askyesnocancel(
+                        "Save changes?", "Save your changes to the names and fixes?",
+                        parent=win)
+                    if answer is None:
+                        return
+                    if answer:
+                        save()
+                        return
+                win.destroy()
+
+            self.track_unsaved(win, lambda: "Names and fixes" if changed() else None)
+            ghost_button(bar, "Cancel", close, width=80, height=30).pack(side="right")
             ctk.CTkButton(bar, text="Save", width=90, height=30, command=save
                           ).pack(side="right", padx=(0, 8))
-            win.bind("<Escape>", lambda e: win.destroy())
+            win.bind("<Escape>", close)
+            win.protocol("WM_DELETE_WINDOW", close)
 
         def start_update(self):
             info = self.update_info or {}
@@ -3176,6 +3271,14 @@ def build_app_class():
             """Never interrupt a file: wait until the current one is done."""
             if self.quitting or self.update_state != "waiting":
                 return
+            unsaved = self.unsaved_work()
+            if unsaved:
+                self.set_banner("Update ready",
+                                f"It installs once you've saved or closed: {', '.join(unsaved)}.")
+                self.update_btn.configure(text="Install now", state="normal",
+                                          command=self.install_update_now)
+                self.after(3000, self.install_when_idle)
+                return
             busy = self.engine.snapshot()["file"]
             if busy:
                 self.set_banner("Update ready",
@@ -3187,6 +3290,13 @@ def build_app_class():
             self.install_update_now()
 
         def install_update_now(self):
+            unsaved = self.unsaved_work()
+            if unsaved:
+                messagebox.showinfo(
+                    "Save your changes first",
+                    "Save or close these first, so nothing is lost when the program "
+                    "restarts:\n\n" + "\n".join(f"• {u}" for u in unsaved), parent=self)
+                return
             busy = self.engine.snapshot()["file"]
             if busy and not messagebox.askyesno(
                     "Install the update now?",
@@ -3786,6 +3896,17 @@ def build_app_class():
             """Quit. force=True (from the installer) skips the questions."""
             if self.quitting:
                 return
+            unsaved = self.unsaved_work()
+            if unsaved and not force:
+                self.show_window()
+                if not messagebox.askyesno(
+                        "Unsaved changes",
+                        "These have changes that aren't saved:\n\n"
+                        + "\n".join(f"• {u}" for u in unsaved)
+                        + "\n\nQuit anyway and lose them?", icon="warning", parent=self):
+                    return
+            elif unsaved:
+                log.warning("Closing (installer) with unsaved changes in: %s", ", ".join(unsaved))
             if force:
                 self.pending.clear()
                 if self.engine.snapshot()["file"]:

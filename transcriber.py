@@ -16,6 +16,7 @@ or deleted.
 """
 
 import hashlib
+import dataclasses
 import json
 import logging
 import logging.handlers
@@ -34,7 +35,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.25.1"
+__version__ = "1.25.2"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -251,37 +252,126 @@ def _clean_fixes(fixes) -> dict:
     return {str(k).strip(): str(v).strip() for k, v in fixes.items() if str(k).strip()}
 
 
-def read_vocabulary(output_folder) -> dict:
-    """{"word_list": [...], "replacements": {...}} from the shared file
-    (empty if it doesn't exist or can't be read)."""
-    try:
-        with open(Path(output_folder) / VOCAB_FILE, encoding="utf-8-sig") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        data = {}
-    return {"word_list": _clean_words(data.get("word_list")),
-            "replacements": _clean_fixes(data.get("replacements"))}
+class VocabularyUnreadable(OSError):
+    """The shared vocabulary exists but couldn't be read right now (another
+    PC is saving it, or the network blinked). Nothing must be written then,
+    or every PC's names and fixes would be lost."""
+
+
+def read_vocabulary(output_folder, strict: bool = False) -> dict:
+    """{"word_list": [...], "replacements": {...}} from the shared file.
+
+    A file that doesn't exist (yet) is empty. Any other problem is retried a
+    few times; then strict=True raises VocabularyUnreadable, and
+    strict=False (for showing counts) returns empty lists."""
+    path = Path(output_folder) / VOCAB_FILE
+    last_error = None
+    for attempt in range(5):
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("not a vocabulary file")
+            return {"word_list": _clean_words(data.get("word_list")),
+                    "replacements": _clean_fixes(data.get("replacements"))}
+        except FileNotFoundError:
+            return {"word_list": [], "replacements": {}}
+        except (OSError, ValueError) as e:
+            last_error = e
+            time.sleep(0.3 * (attempt + 1))
+    if strict:
+        raise VocabularyUnreadable(f"the shared names and fixes couldn't be read ({last_error})")
+    log.warning("Couldn't read the shared names and fixes (%s)", last_error)
+    return {"word_list": [], "replacements": {}}
 
 
 def write_vocabulary(output_folder, word_list, replacements) -> None:
-    """Save the shared lists (temp file + rename, so it's never half-written)."""
+    """Save the shared lists (temp file + rename, so it's never half-written).
+    Use update_vocabulary() to change them: it re-reads first, under a lock."""
     folder = Path(output_folder)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / VOCAB_FILE
-    tmp = path.with_name(f"{VOCAB_FILE}.{HOSTNAME}.tmp")
+    tmp = path.with_name(f"{VOCAB_FILE}.{HOSTNAME}-{os.getpid()}.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"word_list": _clean_words(word_list),
                    "replacements": _clean_fixes(replacements)},
                   f, ensure_ascii=False, indent=1)
+    for attempt in range(5):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:  # another PC is reading it this instant
+            time.sleep(0.3 * (attempt + 1))
     os.replace(tmp, path)
 
 
+VOCAB_LOCK = ".vocabulary.lock"
+
+
+def update_vocabulary(output_folder, change) -> dict:
+    """Change the shared lists safely: take a short lock (so two PCs take
+    turns), read the latest version (refusing if it can't be read), apply
+    change(vocab) and save. Returns the saved lists."""
+    folder = Path(output_folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    lock = folder / VOCAB_LOCK
+    got = False
+    for _ in range(50):  # up to ~10 s
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"{HOSTNAME} {os.getpid()}".encode())
+            os.close(fd)
+            got = True
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > 30:  # left by a crash
+                    os.rename(lock, lock.with_name(f"{VOCAB_LOCK}.stale-{HOSTNAME}-{os.getpid()}"))
+                    continue
+            except OSError:
+                pass
+            time.sleep(0.2)
+    if not got:
+        raise VocabularyUnreadable("another PC is busy saving the names and fixes; try again")
+    try:
+        vocab = read_vocabulary(folder, strict=True)
+        change(vocab)
+        write_vocabulary(folder, vocab["word_list"], vocab["replacements"])
+        return vocab
+    finally:
+        try:
+            lock.unlink()
+        except OSError:
+            pass
+        for stale in folder.glob(f"{VOCAB_LOCK}.stale-*"):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+
+
 def add_fix(output_folder, wrong: str, right: str) -> None:
-    """Add one fix, re-reading the file first so another PC's latest
-    changes aren't lost."""
-    vocab = read_vocabulary(output_folder)
-    vocab["replacements"][wrong] = right
-    write_vocabulary(output_folder, vocab["word_list"], vocab["replacements"])
+    """Add one fix to the latest shared list."""
+    update_vocabulary(output_folder, lambda v: v["replacements"].__setitem__(wrong, right))
+
+
+def save_vocabulary_edits(output_folder, base: dict, words: list, fixes: dict) -> dict:
+    """Apply what the user changed in the Vocabulary window (compared with
+    `base`, what it showed when opened) on top of the latest shared lists,
+    so names and fixes another PC added meanwhile are kept."""
+    base_words = {w.lower() for w in base["word_list"]}
+    new_words = {w.lower() for w in words}
+    removed_words = base_words - new_words
+    removed_fixes = set(base["replacements"]) - set(fixes)
+    changed = {k: v for k, v in fixes.items() if base["replacements"].get(k) != v}
+
+    def apply(v):
+        kept = [w for w in v["word_list"] if w.lower() not in removed_words]
+        v["word_list"] = _clean_words(kept + [w for w in words if w.lower() not in base_words])
+        for k in removed_fixes:
+            v["replacements"].pop(k, None)
+        v["replacements"].update(changed)
+    return update_vocabulary(output_folder, apply)
 
 
 def move_vocabulary_to_shared(raw: dict) -> None:
@@ -292,12 +382,14 @@ def move_vocabulary_to_shared(raw: dict) -> None:
     if not words and not fixes:
         return
     folder = raw.get("output_folder") or DEFAULT_CONFIG["output_folder"]
+
+    def merge(shared):
+        shared["word_list"] = _clean_words(shared["word_list"] + words)
+        merged = dict(fixes)
+        merged.update(shared["replacements"])  # the shared list wins on clashes
+        shared["replacements"] = merged
     try:
-        shared = read_vocabulary(folder)
-        merged_words = _clean_words(shared["word_list"] + words)
-        merged_fixes = dict(fixes)
-        merged_fixes.update(shared["replacements"])  # the shared list wins on clashes
-        write_vocabulary(folder, merged_words, merged_fixes)
+        update_vocabulary(folder, merge)
     except OSError as e:
         log.warning("Couldn't move names and fixes to the shared Transcripts folder yet "
                     "(%s); will try again next time.", e)
@@ -758,7 +850,10 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
     end. That way a half-finished transcript (e.g. if the program is closed)
     never looks like a finished one.
     """
-    config = dict(config, **read_vocabulary(config["output_folder"]))
+    try:  # the latest shared names and fixes (another PC may have added some)
+        config = dict(config, **read_vocabulary(config["output_folder"], strict=True))
+    except OSError as e:
+        log.warning("   Using the names and fixes loaded earlier (%s)", e)
     hint = filename_hint(audio_path) if config["use_filename_hint"] else None
     if hint:
         log.info('   Using hint from file name: "%s"', hint)
@@ -915,11 +1010,21 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
             # No random retries here: on a short stretch on its own, the
             # plain best guess is the most reliable.
             second = dict(options, temperature=0.0)
+            # The language is known by now: don't detect it again each time.
+            if not second.get("language") and info is not None:
+                second["language"] = info.language
+            second.pop("language_detection_segments", None)
 
             def read_stretch(a, b):
                 got = []
-                extra, _ = model.transcribe(source, clip_timestamps=[a, b], **second)
+                # Only this stretch is handed over (not the whole recording),
+                # so each second look takes seconds, not a full pass.
+                piece = source[int(a * 16000):int(b * 16000)]
+                if len(piece) < 16000:
+                    return got
+                extra, _ = model.transcribe(piece, **second)
                 for seg in extra:
+                    seg = dataclasses.replace(seg, start=seg.start + a, end=seg.end + a)
                     if seg.no_speech_prob > 0.6 and seg.avg_logprob < -0.8:
                         continue  # probably invented over music
                     text = clean(seg)
@@ -1163,14 +1268,24 @@ class WorkClaim:
 
     def _heartbeat(self) -> None:
         while not self._stop.wait(self.HEARTBEAT_SECONDS):
+            if not self.is_ours():
+                return  # another PC took it over (e.g. after a long network outage)
             try:
                 os.utime(self.path)
             except OSError:
                 pass
 
+    def is_ours(self) -> bool:
+        return self.owner_of(self.path) == (HOSTNAME, os.getpid())
+
     def release(self) -> None:
         if self._stop:
             self._stop.set()
+        # Only remove the claim if it's still ours: if another PC took it over
+        # while our network was down, deleting it would let a third PC start
+        # the same file.
+        if not self.is_ours():
+            return
         try:
             self.path.unlink()
         except OSError:
@@ -1184,6 +1299,9 @@ class WorkClaim:
             return host, int(pid)
         except (OSError, ValueError):
             return None
+
+
+SETTLE_SECONDS = 60  # a file must stay unchanged this long before it's started
 
 
 def file_signature(path: Path):
@@ -1223,9 +1341,11 @@ class Transcriber:
         # (Passed in by the window, so skipped files stay skipped after a
         # settings change restarts this loop.)
         self.failed = {} if failed is None else failed
-        # Last seen size of files not done yet: name -> size. A file is only
-        # started once its size is the same in two scans in a row (so files
-        # still being copied or recorded are left alone).
+        # Files not done yet: name -> ((size, modified time), when we first saw
+        # that). A file is only started once both have stayed the same for
+        # SETTLE_SECONDS of this PC's clock, so files still being recorded or
+        # copied (loggers write in bursts; network folders can report an old
+        # size for a while) are left alone.
         self.pending_sizes = {}
         # Other PCs' claims we've seen: claim path -> (modified time, when we
         # first saw that modified time). Used to spot abandoned claims.
@@ -1264,9 +1384,17 @@ class Transcriber:
         return True
 
     def _remove_claim(self, claim: Path) -> None:
+        """Clear an abandoned claim. It's renamed first: if two PCs both
+        decide it's abandoned, only one rename succeeds, so neither can delete
+        the fresh claim the other has just made."""
         self.claims_seen.pop(claim, None)
+        grave = claim.with_name(f"{claim.name}.stale-{HOSTNAME}-{os.getpid()}")
         try:
-            claim.unlink()
+            os.rename(claim, grave)
+        except OSError:
+            return
+        try:
+            grave.unlink()
         except OSError:
             pass
 
@@ -1307,16 +1435,20 @@ class Transcriber:
                 del self.pending_sizes[name]
 
         ready, saw_new_file = [], False
+        now = time.time()
+        settle = float(self.config.get("settle_seconds", SETTLE_SECONDS))
         for p in waiting:
-            size = get_size(p)
+            sig = file_signature(p)
             previous = self.pending_sizes.get(p.name)
-            self.pending_sizes[p.name] = size
-            if size and size == previous and can_open(p):
+            if previous is None or previous[0] != sig:
+                self.pending_sizes[p.name] = (sig, now)
+                if previous is None:
+                    saw_new_file = True
+                    if self.started_scanning:
+                        log.info("New file: %s (starts once it has stopped growing)", p.name)
+                continue
+            if sig and sig[0] and now - previous[1] >= settle and can_open(p):
                 ready.append(p)
-            elif previous is None:
-                saw_new_file = True
-                if self.started_scanning:
-                    log.info("New file: %s (waiting for copy to finish)", p.name)
 
         self.started_scanning = True
         return sort_queue(ready, self.config["order"]), waiting, saw_new_file
@@ -1343,7 +1475,19 @@ class Transcriber:
             log.info("Transcribing %s...%s", audio.name, more)
             self.hooks.event("started", audio=audio, waiting=still_waiting)
             start = time.time()
+            before = file_signature(audio)
             transcribe_file(self.model, audio, txt, self.config, self.hooks)
+            if file_signature(audio) != before:
+                # Still being recorded or copied after all: throw this
+                # transcript away; the file is redone once it settles.
+                log.warning("%s changed while it was being transcribed (still being "
+                            "recorded?). It will be redone once it stops changing.", audio.name)
+                try:
+                    txt.unlink()
+                except OSError:
+                    pass
+                self.pending_sizes.pop(audio.name, None)
+                return
             self.names.record(txt, audio)
             took = time.time() - start
             log.info("Done → %s (took %.0fs)", txt.name, took)
@@ -1385,12 +1529,10 @@ class Transcriber:
             hooks.event("queue", waiting=len(waiting),
                         files=sort_queue(waiting, self.config["order"]))
 
-            if saw_new_file:
-                # A file seen for the first time gets a second look in 2
-                # seconds (to confirm it has finished copying) BEFORE we start
-                # anything else, so a fresh file isn't stuck behind one more
-                # long backlog file.
-                hooks.sleep(2)
+            if saw_new_file and not ready:
+                # Something new arrived: look again soon (it starts once it has
+                # stopped changing), rather than waiting the full interval.
+                hooks.sleep(min(interval, 10))
                 continue
 
             if ready:

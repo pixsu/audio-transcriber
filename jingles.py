@@ -242,7 +242,10 @@ def find_jingles(audio: np.ndarray, library: list, should_stop=None) -> list:
     chosen = []
     for _, a, b, item, offset in sorted(found, key=lambda f: -f[0]):
         if all(b <= ca or a >= cb for ca, cb, *_ in chosen):
-            chosen.append((max(0.0, a), b, item, offset))
+            if a < 0:  # the recording starts partway through this item
+                offset += -a
+                a = 0.0
+            chosen.append((a, b, item, offset))
     return sorted(chosen, key=lambda c: c[0])
 
 
@@ -280,7 +283,9 @@ def make_codes(audio: np.ndarray):
     k = CODE_SMOOTH
     if len(mel) <= k + CODE_LAG:
         return np.zeros(0, np.uint32), np.zeros(0, bool)
-    c = np.cumsum(np.vstack([np.zeros((1, mel.shape[1]), np.float32), mel]), axis=0)
+    # Double precision: in single precision the running sum drifts over an
+    # hour, and codes late in a file stop matching the same sound earlier on.
+    c = np.cumsum(np.vstack([np.zeros((1, mel.shape[1]), np.float64), mel]), axis=0)
     sm = (c[k:] - c[:-k]) / k
     edges = np.linspace(0, mel.shape[1], 34).astype(int)
     bands = np.stack([sm[:, edges[i]:edges[i + 1]].mean(axis=1) for i in range(33)], axis=1)
@@ -609,7 +614,11 @@ def refine_places(places, max_airings: int = 6):
         warnings.simplefilter("ignore", RuntimeWarning)  # columns no airing covers
         sim = np.nanmean(np.vstack(sims), axis=0)
     smooth = np.convolve(np.nan_to_num(sim, nan=0.0), np.ones(10) / 10, mode="same")
-    mid = (core_a + core_b) // 2
+    # Grow from the best-matching point inside the clip (not just its
+    # middle, which may be talked over).
+    mid = core_a + int(np.argmax(smooth[core_a:core_b])) if core_b > core_a else core_a
+    if smooth[mid] < EDGE_MATCH:
+        return places  # no clean stretch to measure from: keep the rough edges
     lo = hi = mid
     while lo > 0 and smooth[lo - 1] >= EDGE_MATCH:
         lo -= 1
@@ -622,6 +631,8 @@ def refine_places(places, max_airings: int = 6):
         lo = core_a
     if hi >= len(smooth) - 12:
         hi = core_b
+    if (hi - lo) * FRAME_SECONDS < MIN_SECONDS:
+        return places  # too little matched to trust: keep the rough edges
     refined = [(ref_path, round(r0 + lo * FRAME_SECONDS, 1), round(r0 + hi * FRAME_SECONDS, 1))]
     for idx, (path, a, b) in enumerate(places[1:], start=1):
         if idx in shifts:

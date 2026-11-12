@@ -6,6 +6,37 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.25.2] - 2026-11-12
+
+### Fixed
+- **Recordings still being written are no longer transcribed half-finished.**
+  A file now starts only after its size and date have stayed the same for
+  60 seconds (loggers write in bursts, and network folders can report an
+  old size for a while). If a file still changes while it's being
+  transcribed, that transcript is thrown away and the file is redone once
+  it stops changing. It isn't marked as failed.
+- **The shared names and fixes can no longer be wiped.** If the shared file
+  can't be read for a moment (another PC is saving it, or the network
+  blinks), nothing is written over it. Saves from several PCs take turns,
+  so a fix added on one PC isn't lost when another PC saves. Saving the
+  Vocabulary window keeps what other PCs added while it was open.
+- **Unsaved edits are protected.** Saving a transcript that something else
+  changed while you were editing asks before replacing it. Closing the
+  Vocabulary window with changes asks whether to save them. Quitting asks
+  if anything is unsaved, and an update waits until you've saved or closed.
+  Opening a transcript that's already open brings its window to the front
+  instead of opening a second copy.
+- **Safer work sharing between PCs.** A PC no longer deletes another PC's
+  claim on a file, and two PCs clearing the same abandoned claim can't
+  both start the file.
+- **Song start times are right when a song starts mid-file,** and jingle
+  matches late in long files get exact edges.
+
+### Changed
+- **The second pass is faster** (186 s instead of 263 s on a 1-hour test
+  file): it only reads the gaps it's filling and reuses the language
+  already detected.
+
 ## [1.25.1] - 2026-11-12
 
 ### Fixed
