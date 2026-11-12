@@ -430,7 +430,7 @@ def fix_transcript_file(path, fix):
         tmp = Path(path).with_name(Path(path).name + f".{T.HOSTNAME}.fix")
         with open(tmp, "w", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(new))
-        os.replace(tmp, path)
+        T.replace_keeping_created(tmp, path)
     return changed
 
 
@@ -1237,7 +1237,7 @@ def build_app_class():
             self.copying = 0                # files being copied into the Inbox
             self.took = {}                  # transcript name -> seconds (this session)
             self.view_keys = {}             # tab -> what it currently shows
-            self.completed = []             # [(mtime, Path)] newest first
+            self.completed = []             # [(finished time, Path)] newest first
             self.last_completed_scan = 0.0
             self.progress_mode = "determinate"
             self.pending = {}               # settings changed but not applied yet
@@ -1367,15 +1367,17 @@ def build_app_class():
 
             top = ctk.CTkFrame(card, fg_color="transparent")
             top.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 0))
+            # Buttons are packed first so a narrow window squeezes the text,
+            # never them.
+            self.pause_btn = ctk.CTkButton(top, text="Pause", width=96, height=30,
+                                           command=self.toggle_pause)
+            self.pause_btn.pack(side="right")
             self.pill = ctk.CTkLabel(top, text="  Starting  ", corner_radius=10,
                                      fg_color=BLUE, text_color="white", font=font(12, "bold"),
                                      height=24)
             self.pill.pack(side="left")
-            self.counts_text = ctk.CTkLabel(top, text="", text_color=GRAY)
+            self.counts_text = ctk.CTkLabel(top, text="", text_color=GRAY, anchor="w")
             self.counts_text.pack(side="left", padx=12)
-            self.pause_btn = ctk.CTkButton(top, text="Pause", width=96, height=30,
-                                           command=self.toggle_pause)
-            self.pause_btn.pack(side="right")
             self.skip_btn = ghost_button(top, "Skip this file", self.skip_file, width=110, height=30)
             self.retry_btn = ctk.CTkButton(top, text="Try again", width=96, height=30,
                                            fg_color=RED, hover_color="#b52b27",
@@ -1512,6 +1514,7 @@ def build_app_class():
             ctk.CTkFrame(outer, height=1, fg_color=("gray80", "gray30")
                          ).pack(side="bottom", fill="x", padx=12)
             self.apply_btn = ctk.CTkButton(bar, text="Apply", width=90, height=32,
+                                           text_color_disabled=("gray50", "gray55"),
                                            command=self.apply_changes)
             self.apply_btn.pack(side="right")
             self.discard_btn = ghost_button(bar, "Discard", self.discard_changes,
@@ -1562,17 +1565,18 @@ def build_app_class():
                                     pady=(0, 4))
             ctk.CTkLabel(card, text="Jingles, ads, songs", anchor="w", font=font(12, "bold")
                          ).grid(row=2, column=0, sticky="w", padx=12, pady=(10, 0))
+            # On their own row: next to the title they didn't fit.
             jingle_buttons = ctk.CTkFrame(card, fg_color="transparent")
-            jingle_buttons.grid(row=2, column=1, sticky="e", padx=12, pady=(10, 0))
+            jingle_buttons.grid(row=4, column=0, columnspan=2, sticky="w", padx=12, pady=(2, 12))
             self.find_repeats_btn = ghost_button(jingle_buttons, "Find repeats...",
                                                  self.find_repeats, width=130)
             self.find_repeats_btn.pack(side="left", padx=(0, 6))
-            ghost_button(jingle_buttons, "Manage...", self.manage_jingles, width=80
+            ghost_button(jingle_buttons, "Manage...", self.manage_jingles, width=90
                          ).pack(side="left")
             self.jingle_summary = ctk.CTkLabel(card, text="", anchor="w", justify="left",
                                                text_color=GRAY, font=font(11), wraplength=290)
             self.jingle_summary.grid(row=3, column=0, columnspan=2, sticky="w", padx=12,
-                                     pady=(0, 10))
+                                     pady=(0, 6))
             self.refresh_vocab_summary()
 
             card = self._section(panel, "Folders")
@@ -1790,6 +1794,8 @@ def build_app_class():
             if any(k in changes for k in ("input_folder", "output_folder")):
                 self.completed, self.last_completed_scan = [], 0.0
                 self.view_keys.clear()
+            if "output_folder" in changes:
+                self.output_folder_changed()
             self.saved_text.configure(text="")
             self.just_applied = True
             self.load_settings_into_widgets()
@@ -2002,6 +2008,22 @@ def build_app_class():
 
         # ---------------------------------------------------------- vocabulary
         # ------------------------------------------------------ transcript review
+        def bring_back(self, key):
+            """If the window `key` is already open, bring it to the front
+            (instead of opening a second one) and return it."""
+            win = getattr(self, "tool_windows", {}).get(key)
+            if win is not None and win.winfo_exists():
+                win.deiconify()
+                win.lift()
+                win.focus_force()
+                return win
+            return None
+
+        def remember_window(self, key, win):
+            if not hasattr(self, "tool_windows"):
+                self.tool_windows = {}
+            self.tool_windows[key] = win
+
         def unsaved_work(self):
             """Descriptions of open windows with changes that aren't saved."""
             out = []
@@ -2166,7 +2188,7 @@ def build_app_class():
                 try:
                     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
                         f.write(new_text)
-                    os.replace(tmp, path)
+                    T.replace_keeping_created(tmp, path)
                 except OSError as e:
                     messagebox.showerror("Save transcript", f"Couldn't save:\n{e}", parent=win)
                     return False
@@ -2361,8 +2383,18 @@ def build_app_class():
                         w.setframerate(16000)
                         w.writeframes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
                 except Exception as e:
-                    self.ui_calls.put(lambda: (button.configure(text="▶ Play"),
-                                               messagebox.showerror("Play", str(e))))
+                    message = str(e) or type(e).__name__
+
+                    def failed():
+                        parent = self
+                        try:
+                            button.configure(text="▶ Play")
+                            parent = button.winfo_toplevel()
+                        except Exception:
+                            pass
+                        messagebox.showerror("Play", f"Couldn't play this clip:\n{message}",
+                                             parent=parent)
+                    self.ui_calls.put(failed)
                     return
 
                 def start():
@@ -2547,30 +2579,64 @@ def build_app_class():
                     return
                 kind_name = fields["Type"].get() or kind_guess
                 label = fields["Name"].get().strip() or self.name_from_text(correct, kind_name)
-                dlg.configure(cursor="watch")
-                dlg.update()
-                try:
-                    import jingles
-                    from faster_whisper.audio import decode_audio
-                    audio = decode_audio(str(audio_path))
-                    jingles.save_jingle(self.output_dir(), label, correct, audio, a, b,
-                                        kind=kind_name.lower())
-                except Exception as e:
-                    dlg.configure(cursor="")
-                    if "seconds" in str(e) and not more.grid_info():
-                        flip()
-                    messagebox.showerror("Save", str(e), parent=dlg)
+                if saving["on"]:
                     return
-                log.info('Saved %s "%s" (%s, %d s)', kind_name.lower(), label,
-                         Path(audio_path).name, b - a)
-                dlg.destroy()
-                self.refresh_vocab_summary()
-                after_saved(label, a, b, correct, kind_name)
+                saving["on"] = True
+                save_btn.configure(state="disabled", text="Saving…")
+                dlg.configure(cursor="watch")
+                output = self.output_dir()
 
-            ghost_button(bar, "Cancel", dlg.destroy, width=80, height=30).pack(side="right")
-            ctk.CTkButton(bar, text="Save", width=90, height=30, command=save
-                          ).pack(side="right", padx=(0, 8))
-            dlg.bind("<Escape>", lambda e: dlg.destroy())
+                def work():
+                    # Only the clip itself is read (a whole hour took several
+                    # seconds and froze the window).
+                    error = None
+                    try:
+                        import jingles
+                        if b - a < jingles.MIN_SECONDS:
+                            raise ValueError(f"A jingle must be at least "
+                                             f"{jingles.MIN_SECONDS:.0f} seconds long.")
+                        if b - a > jingles.MAX_SECONDS:
+                            raise ValueError(f"A jingle can be at most "
+                                             f"{jingles.MAX_SECONDS / 60:.0f} minutes long.")
+                        rate = jingles.SAMPLE_RATE
+                        clip = jingles.decode_window(audio_path, a, b)
+                        if len(clip) < (b - a) * rate * 0.98:  # seeking failed: read it all
+                            from faster_whisper.audio import decode_audio
+                            clip = decode_audio(str(audio_path))[int(a * rate):int(b * rate)]
+                        jingles.save_jingle(output, label, correct, clip, 0.0, b - a,
+                                            kind=kind_name.lower())
+                    except Exception as e:
+                        error = str(e) or type(e).__name__
+                    self.ui_calls.put(lambda: saved(error))
+
+                def saved(error):
+                    saving["on"] = False
+                    if not dlg.winfo_exists():
+                        return
+                    dlg.configure(cursor="")
+                    save_btn.configure(state="normal", text="Save")
+                    if error:
+                        if "seconds" in error and not more.grid_info():
+                            flip()
+                        messagebox.showerror("Save", error, parent=dlg)
+                        return
+                    log.info('Saved %s "%s" (%s, %d s)', kind_name.lower(), label,
+                             Path(audio_path).name, b - a)
+                    dlg.destroy()
+                    self.refresh_vocab_summary()
+                    after_saved(label, a, b, correct, kind_name)
+                threading.Thread(target=work, name="save-jingle", daemon=True).start()
+
+            saving = {"on": False}
+
+            def close():
+                if not saving["on"]:  # not while it's being saved
+                    dlg.destroy()
+            ghost_button(bar, "Cancel", close, width=80, height=30).pack(side="right")
+            save_btn = ctk.CTkButton(bar, text="Save", width=90, height=30, command=save)
+            save_btn.pack(side="right", padx=(0, 8))
+            dlg.bind("<Escape>", lambda e: close())
+            dlg.protocol("WM_DELETE_WINDOW", close)
             dlg._text, dlg._save, dlg._flip = text_box, save, flip  # (for tests)
 
         # ----------------------------------------------------- repeat finder
@@ -2627,21 +2693,29 @@ def build_app_class():
 
         def schedule_repeat_check(self):
             """Look for new repeats in the background every 30 minutes."""
-            if not getattr(self, "_repeat_busy", False) and not self.quitting:
-                self._repeat_busy = True
-
-                def job():
-                    try:
-                        results, _ = self.compute_repeats()
-                    except Exception as e:
-                        log.debug("Automatic repeat check failed: %s", e)
-                        results = None
-                    self.ui_calls.put(lambda: self.on_repeat_check(results))
-                threading.Thread(target=job, name="repeat-check", daemon=True).start()
+            self.check_repeats_now()
             self.after(self.REPEAT_CHECK_EVERY * 1000, self.schedule_repeat_check)
 
-        def on_repeat_check(self, results):
+        def check_repeats_now(self):
+            if getattr(self, "_repeat_busy", False) or self.quitting:
+                return
+            self._repeat_busy = True
+            folder = self.output_dir()
+
+            def job():
+                try:
+                    results, _ = self.compute_repeats()
+                except Exception as e:
+                    log.debug("Automatic repeat check failed: %s", e)
+                    results = None
+                self.ui_calls.put(lambda: self.on_repeat_check(results, folder))
+            threading.Thread(target=job, name="repeat-check", daemon=True).start()
+
+        def on_repeat_check(self, results, folder=None):
             self._repeat_busy = False
+            if folder is not None and folder != self.output_dir():
+                self.check_repeats_now()  # the folder changed meanwhile: check the new one
+                return
             if results is None:
                 return
             self._repeat_cache = (time.time(), results)
@@ -2663,7 +2737,10 @@ def build_app_class():
             """Audio that aired more than once, across all recordings the
             program has transcribed (not just what's in the Inbox now)."""
             import jingles
+            if self.bring_back("repeats"):
+                return
             win = ctk.CTkToplevel(self)
+            self.remember_window("repeats", win)
             win.title("Find repeated jingles, ads and songs")
             win.geometry("760x600")
             win.transient(self)
@@ -2821,6 +2898,10 @@ def build_app_class():
                     info.configure(text=f'Saved "{label}"' + (
                         f", and written into {fixed} transcript"
                         f"{'s' if fixed != 1 else ''}." if fixed else "."))
+                    if not body.winfo_children():
+                        self._empty(body, "All saved",
+                                    "Every repeat found so far is saved. New ones are looked "
+                                    "for every 30 minutes.")
 
                 more_places = r["count"] - 1
                 heard = (f"Heard in {Path(path).stem} at {T.format_timestamp(a)}"
@@ -2843,8 +2924,9 @@ def build_app_class():
             else:
                 info.configure(text="Comparing your recordings…")
                 threading.Thread(target=work, name="repeat-finder", daemon=True).start()
-            win.protocol("WM_DELETE_WINDOW", lambda: (stop.set(), win.destroy()))
-            win.bind("<Escape>", lambda e: (stop.set(), win.destroy()))
+            win._close = lambda: (stop.set(), win.destroy())
+            win.protocol("WM_DELETE_WINDOW", win._close)
+            win.bind("<Escape>", lambda e: win._close())
 
         def transcript_for(self, audio_path):
             """The transcript of a recording, with its real file name (the
@@ -2906,7 +2988,7 @@ def build_app_class():
             tmp = path.with_name(path.name + f".{T.HOSTNAME}.jingle")
             with open(tmp, "w", encoding="utf-8", newline="\n") as f:
                 f.write("\n".join(new))
-            os.replace(tmp, path)
+            T.replace_keeping_created(tmp, path)
 
         def edit_saved_words(self, parent, item, refresh):
             """Fix the words of a saved jingle / ad / song."""
@@ -2943,7 +3025,10 @@ def build_app_class():
 
         def manage_jingles(self):
             import jingles
+            if self.bring_back("manage"):
+                return
             win = ctk.CTkToplevel(self)
+            self.remember_window("manage", win)
             win.title("Jingles, ads and songs")
             win.geometry("720x520")
             win.transient(self)
@@ -3095,6 +3180,18 @@ def build_app_class():
             status.configure(text="  ·  ".join(parts))
             reload(highlight=right)
 
+        def output_folder_changed(self):
+            """The Transcripts folder changed: nothing about the old one stays."""
+            for key in ("repeats", "manage"):
+                win = getattr(self, "tool_windows", {}).get(key)
+                if win is not None and win.winfo_exists():
+                    getattr(win, "_close", win.destroy)()
+            self._repeat_cache = (0, [])
+            self._repeat_announced = 0
+            self.update_repeat_badge()
+            self.refresh_vocab_summary()
+            self.check_repeats_now()
+
         def refresh_vocab_summary(self):
             vocab = T.read_vocabulary(self.output_dir())
             words, fixes = vocab["word_list"], vocab["replacements"]
@@ -3118,6 +3215,8 @@ def build_app_class():
 
         def edit_vocabulary(self):
             """A window with two lists: names to spell right, and fixes."""
+            if self.bring_back("vocabulary"):
+                return
             try:
                 vocab = T.read_vocabulary(self.output_dir(), strict=True)
             except OSError as e:
@@ -3127,6 +3226,7 @@ def build_app_class():
             words, fixes = vocab["word_list"], vocab["replacements"]
 
             win = ctk.CTkToplevel(self)
+            self.remember_window("vocabulary", win)
             win.title("Vocabulary")
             win.geometry("820x600")
             win.minsize(640, 460)
@@ -3368,24 +3468,50 @@ def build_app_class():
                     select.close()
 
         def tick(self):
-            """Runs 5 times a second: update everything from the engine."""
-            if open_popup and self.focus_displayof() is None:
-                close_popups()  # switched to another program
-            while not self.ui_calls.empty():
+            """Runs 5 times a second: update everything from the engine.
+            Each part is guarded: an unexpected error is logged and everything
+            else (and the next tick) still runs, so the window, its buttons
+            and the tray menu never stop responding."""
+            try:
                 try:
-                    self.ui_calls.get_nowait()()
+                    if open_popup and self.focus_displayof() is None:
+                        close_popups()  # switched to another program
                 except Exception:
-                    T.file_only.error("UI error:\n%s", T.traceback.format_exc())
-            self.drain_log()
-            while not self.engine.events.empty():
-                self.on_engine_event(*self.engine.events.get_nowait())
+                    pass  # (Tk can't name some system windows)
+                while not self.ui_calls.empty():
+                    try:
+                        self.ui_calls.get_nowait()()
+                    except Exception:
+                        self.display_error()
+                self.guarded(self.drain_log)
+                while not self.engine.events.empty():
+                    event = self.engine.events.get_nowait()
+                    self.guarded(lambda: self.on_engine_event(*event))
+                s = self.engine.snapshot()
+                self.guarded(lambda: self.refresh_status(s))
+                self.guarded(lambda: self.refresh_tab_labels(s))
+                self.guarded(lambda: self.refresh_tabs(s))
+            except Exception:
+                self.display_error()
+            finally:
+                if not self.quitting:
+                    self.after(200, self.tick)
 
-            s = self.engine.snapshot()
-            self.refresh_status(s)
-            self.refresh_tab_labels(s)
-            self.refresh_tabs(s)
-            if not self.quitting:
-                self.after(200, self.tick)
+        def guarded(self, step):
+            try:
+                step()
+            except Exception:
+                self.display_error()
+
+        def display_error(self):
+            """Log an unexpected screen error (each one at most once a minute)."""
+            text = T.traceback.format_exc()
+            key = text.strip().splitlines()[-1] if text.strip() else "?"
+            seen = getattr(self, "_display_errors", {})
+            self._display_errors = seen
+            if time.time() - seen.get(key, 0) > 60:
+                seen[key] = time.time()
+                T.file_only.error("Display error (the window keeps working):\n%s", text)
 
         def refresh_status(self, s):
             phase = s["phase"]
@@ -3411,8 +3537,9 @@ def build_app_class():
 
             # Buttons that only make sense in some states.
             self._show(self.skip_btn, bool(s["file"]) and phase != "stopping",
-                       side="right", padx=(0, 8))
-            self._show(self.retry_btn, phase == "error", side="right", padx=(0, 8))
+                       side="right", padx=(0, 8), before=self.pill)
+            self._show(self.retry_btn, phase == "error", side="right", padx=(0, 8),
+                       before=self.pill)
 
             # The bar only shows while something is happening.
             bar_visible = bool(s["file"]) or phase in ("loading", "starting", "stopping")
@@ -3578,6 +3705,12 @@ def build_app_class():
                 row = self._row(frame)
                 ctk.CTkLabel(row, text=f"{i + 1}", width=28, text_color=GRAY
                              ).pack(side="left", padx=(8, 0))
+                # Buttons first, so a narrow window squeezes the text, not them.
+                ghost_button(row, "Skip", lambda n=name: self.skip_queued(n), width=56
+                             ).pack(side="right", padx=(4, 10))
+                if i > 0:
+                    ghost_button(row, "Do next", lambda n=name: self.engine.do_next(n), width=72
+                                 ).pack(side="right", padx=4)
                 text = ctk.CTkFrame(row, fg_color="transparent")
                 text.pack(side="left", fill="x", expand=True, pady=6)
                 ctk.CTkLabel(text, text=shorten(name, 58), anchor="w").pack(fill="x")
@@ -3585,11 +3718,6 @@ def build_app_class():
                 ctk.CTkLabel(text, text=f"{media_summary(info)}  \u00b7  added "
                                         f"{format_when(arrived)}",
                              anchor="w", text_color=GRAY, font=font(11)).pack(fill="x")
-                ghost_button(row, "Skip", lambda n=name: self.skip_queued(n), width=56
-                             ).pack(side="right", padx=(4, 10))
-                if i > 0:
-                    ghost_button(row, "Do next", lambda n=name: self.engine.do_next(n), width=72
-                                 ).pack(side="right", padx=4)
 
         def skip_queued(self, name):
             if messagebox.askyesno("Skip this file?",
@@ -3679,6 +3807,12 @@ def build_app_class():
                 return
             for mtime, path, snippet in items:
                 row = self._row(frame)
+                # Buttons first, so a narrow window squeezes the text, not them.
+                ghost_button(row, "Show in folder", lambda p=path: show_in_folder(p), width=104
+                             ).pack(side="right", padx=(4, 10))
+                ctk.CTkButton(row, text="Open", width=60, height=26,
+                              command=lambda p=path: self.review_transcript(p)
+                              ).pack(side="right", padx=4)
                 text = ctk.CTkFrame(row, fg_color="transparent")
                 text.pack(side="left", fill="x", expand=True, padx=(14, 0), pady=6)
                 ctk.CTkLabel(text, text=shorten(path.name, 58), anchor="w").pack(fill="x")
@@ -3708,11 +3842,6 @@ def build_app_class():
                 meta = "  \u00b7  ".join(parts)
                 ctk.CTkLabel(text, text=meta, anchor="w", text_color=GRAY, font=font(11)
                              ).pack(fill="x")
-                ghost_button(row, "Show in folder", lambda p=path: show_in_folder(p), width=104
-                             ).pack(side="right", padx=(4, 10))
-                ctk.CTkButton(row, text="Open", width=60, height=26,
-                              command=lambda p=path: self.review_transcript(p)
-                              ).pack(side="right", padx=4)
 
         def _build_issue_rows(self, frame, issues):
             if not issues:
@@ -3728,6 +3857,9 @@ def build_app_class():
             items = sorted(issues.items(), key=lambda kv: kv[1][2], reverse=True)
             for name, (kind, reason, when) in items:
                 row = self._row(frame)
+                ctk.CTkButton(row, text="Retry", width=64, height=26,
+                              command=lambda n=name: self.retry_one(n)
+                              ).pack(side="right", padx=(4, 10))
                 text = ctk.CTkFrame(row, fg_color="transparent")
                 text.pack(side="left", fill="x", expand=True, padx=(14, 0), pady=6)
                 ctk.CTkLabel(text, text=shorten(name, 58), anchor="w").pack(fill="x")
@@ -3741,9 +3873,6 @@ def build_app_class():
                 ctk.CTkLabel(text, text=friendly_error(reason) if kind == "failed" else reason,
                              anchor="w", justify="left",
                              text_color=GRAY, font=font(11), wraplength=440).pack(fill="x")
-                ctk.CTkButton(row, text="Retry", width=64, height=26,
-                              command=lambda n=name: self.retry_one(n)
-                              ).pack(side="right", padx=(4, 10))
 
         def send_report(self):
             """Zip the log, settings and PC details onto the Desktop to email."""
@@ -3782,7 +3911,9 @@ def build_app_class():
             self.last_completed_scan = time.time()
             try:
                 files = [p for p in self.output_dir().glob("*.txt") if not p.name.startswith(".")]
-                self.completed = sorted(((p.stat().st_mtime, p) for p in files),
+                # By when each was transcribed (its 'created' date), so
+                # correcting old transcripts doesn't make them look new.
+                self.completed = sorted(((T.created_time(p), p) for p in files),
                                         key=lambda mp: mp[0], reverse=True)
             except OSError:
                 self.completed = []

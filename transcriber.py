@@ -35,7 +35,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.25.2"
+__version__ = "1.25.3"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -1124,6 +1124,7 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
             f.write("\n".join(lines))
             f.write("\n")
         os.replace(tmp_path, txt_path)
+        set_created_time(txt_path, time.time())  # = when it was finished
     except BaseException:
         try:
             tmp_path.unlink()
@@ -1302,6 +1303,54 @@ class WorkClaim:
 
 
 SETTLE_SECONDS = 60  # a file must stay unchanged this long before it's started
+
+
+def created_time(path) -> float:
+    """When a file was created. For transcripts this is when it was
+    transcribed (edits keep it; see replace_keeping_created)."""
+    st = os.stat(path)
+    return getattr(st, "st_birthtime", st.st_ctime)
+
+
+def set_created_time(path, when: float) -> None:
+    """Set a file's 'created' date (Windows; works on shared folders too)."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateFileW.restype = wintypes.HANDLE
+        k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                    ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                    wintypes.HANDLE]
+        k32.SetFileTime.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p,
+                                    ctypes.c_void_p]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        # FILE_WRITE_ATTRIBUTES, share read/write/delete, OPEN_EXISTING
+        handle = k32.CreateFileW(str(path), 0x100, 0x7, None, 3, 0x02000000, None)
+        if not handle or handle == wintypes.HANDLE(-1).value:
+            return
+        try:
+            ticks = int((when + 11644473600) * 10_000_000)
+            created = wintypes.FILETIME(ticks & 0xFFFFFFFF, ticks >> 32)
+            k32.SetFileTime(handle, ctypes.byref(created), None, None)
+        finally:
+            k32.CloseHandle(handle)
+    except Exception:
+        pass
+
+
+def replace_keeping_created(tmp, path) -> None:
+    """os.replace(tmp, path), keeping path's 'created' date: an edited
+    transcript still counts as transcribed when it really was (not as new)."""
+    try:
+        created = created_time(path)
+    except OSError:
+        created = None
+    os.replace(tmp, path)
+    if created is not None:
+        set_created_time(path, created)
 
 
 def file_signature(path: Path):

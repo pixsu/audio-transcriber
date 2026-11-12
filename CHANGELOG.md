@@ -6,6 +6,34 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.25.3] - 2026-11-12
+
+### Fixed
+- **Buttons are no longer cut off.** In Settings → Vocabulary, "Find
+  repeats" and "Manage" now sit on their own row. In a small window,
+  Open / Show in folder, Skip / Do next, Retry, and the status card's
+  Skip and Pause buttons keep their full size; long text is shortened
+  instead.
+- **The greyed-out Apply button is readable in light mode.**
+- **Find repeats says "All saved"** once the last item in the list is
+  saved, instead of going blank.
+- **Saving a jingle no longer freezes the window.** Only the clip itself is
+  read, in the background (not the whole hour).
+- **Play shows why** when a clip can't be played, instead of silently
+  resetting the button.
+- **"Done today" counts finished transcripts only.** Correcting old
+  transcripts no longer counts them as new or moves them to the top of
+  Completed.
+- **No duplicate windows.** Find repeats, Manage and Vocabulary come to the
+  front if they're already open, instead of opening again and redoing
+  the work.
+- **One unexpected error can't freeze the window any more.** It's written to
+  the log, and the window, its buttons and the tray menu keep working.
+- **Changing the Transcripts folder updates everything shown.** The
+  names-and-fixes counts and the "Find repeats (N)" badge switch to the new
+  folder, open jingle windows for the old folder close, and the new folder
+  is checked for repeats.
+
 ## [1.25.2] - 2026-11-12
 
 ### Fixed
