@@ -35,7 +35,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.30.0"
+__version__ = "1.31.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -59,6 +59,10 @@ class Stalled(Exception):
 STALL_MINUTES = 20          # no progress this long: stop the file, move on
 STALL_RETRY_MINUTES = 30    # ...and try it again this much later
 STALL_TRIES = 2             # stuck this many times: give up (Issues tab)
+# A file that fails is tried again automatically after these waits (many
+# failures pass: the network was down, the file was still locked, ...).
+# After the last one it stays Failed until it changes or Retry is clicked.
+FAIL_RETRY_MINUTES = (30, 120, 360)
 
 
 class Hooks:
@@ -1519,7 +1523,8 @@ class Transcriber:
         # (Passed in by the window, so skipped files stay skipped after a
         # settings change restarts this loop.)
         self.failed = {} if failed is None else failed
-        # Files that got stuck: name -> (when to try again, times stuck).
+        # Files to try again later: name -> (when, attempts so far, "failed"
+        # or "stalled", the file's signature then).
         # (Passed in by the window, like `failed`.)
         self.retry_later = {} if retry_later is None else retry_later
         # Files not done yet: name -> ((size, modified time), when we first saw
@@ -1603,7 +1608,9 @@ class Transcriber:
             return False
         later = self.retry_later.get(audio.name)
         if later and time.time() < later[0]:
-            return False  # got stuck earlier: wait before trying again
+            if len(later) < 4 or later[3] == self.signature(audio):
+                return False  # failed or got stuck earlier: wait before trying again
+            # (the file was replaced since: try the new one straight away)
         if self.is_claimed_by_other_pc(txt):
             return False
         return True
@@ -1678,10 +1685,9 @@ class Transcriber:
         try:
             got_it = claim.acquire()
         except OSError as e:
-            # e.g. no write permission in the output folder. Treat it as a
-            # failure so we don't retry it in a tight loop.
-            log.error("FAILED %s: could not create %s (%s)", audio.name, claim.path.name, e)
-            self.failed[audio.name] = file_signature(audio)
+            # e.g. no write permission in the output folder, or the network
+            # share is down. Tried again later (not in a tight loop).
+            self.note_failed(audio, f"couldn't create {claim.path.name} ({e})")
             return
         if not got_it:
             return  # another PC grabbed it a moment ago
@@ -1722,17 +1728,16 @@ class Transcriber:
             self.failed[audio.name] = file_signature(audio)
             self.hooks.event("skipped", audio=audio)
         except Exception as e:
-            log.error("FAILED %s: %s (skipping it)", audio.name, e)
             file_only.error("Details for %s:\n%s", audio.name, traceback.format_exc())
-            self.failed[audio.name] = file_signature(audio)
-            self.hooks.event("failed", audio=audio, error=str(e))
+            self.note_failed(audio, str(e) or type(e).__name__)
         finally:
             claim.release()
 
     def note_stalled(self, audio: Path, why: str) -> None:
         """A file stopped making progress: try it again later, or give up
         after it got stuck STALL_TRIES times."""
-        tries = self.retry_later.get(audio.name, (0, 0))[1] + 1
+        entry = self.retry_later.get(audio.name)
+        tries = (entry[1] if entry and entry[2:3] == ("stalled",) else 0) + 1
         if tries >= STALL_TRIES:
             self.retry_later.pop(audio.name, None)
             self.failed[audio.name] = file_signature(audio)
@@ -1741,10 +1746,30 @@ class Transcriber:
             self.hooks.event("failed", audio=audio, error=error)
             return
         when = time.time() + STALL_RETRY_MINUTES * 60
-        self.retry_later[audio.name] = (when, tries)
+        self.retry_later[audio.name] = (when, tries, "stalled", file_signature(audio))
         log.warning("%s stopped making progress (%s). Moving on; it will be tried again "
                     "at %s.", audio.name, why, time.strftime("%H:%M", time.localtime(when)))
         self.hooks.event("stalled", audio=audio, retry_at=when, why=why)
+
+    def note_failed(self, audio: Path, error: str) -> None:
+        """A file failed: try it again after FAIL_RETRY_MINUTES (30 min, 2 h,
+        6 h); after that it stays Failed until it changes or Retry is clicked."""
+        entry = self.retry_later.get(audio.name)
+        failures = (entry[1] if entry and entry[2:3] == ("failed",) else 0) + 1
+        attempts = len(FAIL_RETRY_MINUTES) + 1
+        if failures >= attempts:
+            self.retry_later.pop(audio.name, None)
+            self.failed[audio.name] = file_signature(audio)
+            log.error("FAILED %s: %s (tried %d times; skipping it)", audio.name, error, failures)
+            self.hooks.event("failed", audio=audio,
+                             error=f"{error} (tried {failures} times)")
+            return
+        when = time.time() + FAIL_RETRY_MINUTES[failures - 1] * 60
+        self.retry_later[audio.name] = (when, failures, "failed", file_signature(audio))
+        log.error("FAILED %s: %s. Trying again at %s (attempt %d of %d).", audio.name, error,
+                  time.strftime("%H:%M", time.localtime(when)), failures + 1, attempts)
+        self.hooks.event("retry", audio=audio, retry_at=when, why=error,
+                         attempt=failures + 1, attempts=attempts)
 
     def run_forever(self) -> None:
         """Main loop: always transcribe the next file in queue order (newest

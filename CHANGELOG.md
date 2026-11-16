@@ -6,6 +6,19 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.31.0] - 2026-11-16
+
+### Added
+- **Failed files are tried again automatically.** Many failures pass by
+  themselves (the network share was down, the file was still locked), so a
+  file that fails is retried after 30 minutes, then 2 hours, then 6 hours.
+  Meanwhile it shows in Issues as "Will retry", with the reason and the
+  next attempt ("attempt 2 of 4"). Only after the 4th failed attempt does
+  it stay Failed, until the file changes or you click Retry. A file that
+  is replaced with a new copy is tried again straight away. Files you skip
+  yourself are never retried. You get one notification on the first
+  failure, and another if it finally fails.
+
 ## [1.30.0] - 2026-11-16
 
 ### Added

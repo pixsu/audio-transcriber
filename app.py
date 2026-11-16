@@ -347,7 +347,7 @@ class Engine(T.Hooks):
                     self.issues.pop(data["audio"].name, None)
                 self.events.put((kind, data))
             return
-        if kind in ("started", "done", "failed", "skipped", "stalled"):
+        if kind in ("started", "done", "failed", "skipped", "stalled", "retry"):
             self._stall.clear()
             self._stall_asked = None
             self._alive = time.time()
@@ -362,11 +362,16 @@ class Engine(T.Hooks):
                 self.state["queue"] = [q for q in self.state["queue"] if q[0] != name]
             self._update(phase="working", file=name, percent=0.0, eta=None,
                          message=f"Transcribing {name}")
-        elif kind in ("done", "failed", "skipped", "stalled"):
+        elif kind in ("done", "failed", "skipped", "stalled", "retry"):
             name = data["audio"].name
             with self.lock:
                 if kind == "failed":
                     self.issues[name] = ("failed", data["error"], time.time())
+                elif kind == "retry":
+                    at = time.strftime("%H:%M", time.localtime(data["retry_at"]))
+                    self.issues[name] = ("retry", f"{friendly_error(data['why'])} Trying again "
+                                                  f"at {at} (attempt {data['attempt']} of "
+                                                  f"{data['attempts']}).", time.time())
                 elif kind == "stalled":
                     at = time.strftime("%H:%M", time.localtime(data["retry_at"]))
                     self.issues[name] = ("retry", f"It stopped making progress "
@@ -4642,6 +4647,10 @@ def build_app_class():
                 self.notify("Transcript ready", f"{name} ({format_duration(data['seconds'])})")
             elif kind == "failed":
                 self.notify("Could not transcribe", f"{name}: {shorten(data['error'], 120)}")
+            elif kind == "retry" and data.get("attempt") == 2:  # first failure only
+                at = time.strftime("%H:%M", time.localtime(data["retry_at"]))
+                self.notify("Could not transcribe", f"{name}: {shorten(data['why'], 90)}. "
+                                                    f"Trying again at {at}.")
             elif kind == "stalled":
                 at = time.strftime("%H:%M", time.localtime(data["retry_at"]))
                 self.notify("A file got stuck", f"{name} stopped making progress. Moving on; "
