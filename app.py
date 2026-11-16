@@ -188,12 +188,22 @@ class Engine(T.Hooks):
         self._last_peek = 0.0
         self._file_started = 0.0
         self._paused_for = 0.0
+        # Stuck-file watchdog: when the worker last showed signs of life, a
+        # request to stop the current file, and worker threads left behind
+        # because they were frozen (e.g. waiting on a dead network share).
+        self.retry_later = {}  # shared with the Transcriber
+        self._alive = time.time()
+        self._stall = threading.Event()
+        self._stall_asked = None
+        self._abandoned = set()
+        self._model, self._model_key = None, None  # kept for a replacement worker
         self.thread = threading.Thread(target=self._run, name="engine", daemon=True)
 
     # --- control (called from the window) ---------------------------------
 
     def start(self):
         self.thread.start()
+        threading.Thread(target=self._watch, name="watchdog", daemon=True).start()
 
     def stop(self):
         self._stop.set()
@@ -239,6 +249,7 @@ class Engine(T.Hooks):
             for name in list(self.issues if names is None else names):
                 self.issues.pop(name, None)
                 self.skipped.pop(name, None)
+                self.retry_later.pop(name, None)
         self._last_peek = 0.0  # show it in the Queue soon
         self._wake.set()
 
@@ -267,9 +278,18 @@ class Engine(T.Hooks):
 
     # --- Hooks (called from the engine thread) ----------------------------
 
+    def _left_behind(self):
+        return threading.current_thread() in self._abandoned
+
     def checkpoint(self):
-        if self._stop.is_set():
+        if self._stop.is_set() or self._left_behind():
             raise T.Stopped()
+        self._alive = time.time()
+        if self._stall.is_set():
+            self._stall.clear()
+            percent = self.state.get("percent") or 0
+            raise T.Stalled(f"no progress for {self.stall_minutes()} minutes, "
+                            f"at {percent:.0f}%")
         if self._skip.is_set():
             self._skip.clear()
             raise T.Skipped()
@@ -278,16 +298,17 @@ class Engine(T.Hooks):
             while self._paused.is_set() and not (self._stop.is_set() or self._skip.is_set()):
                 time.sleep(0.2)
             self._paused_for += time.time() - began
+            self._alive = time.time()  # time paused isn't "stuck"
             self.checkpoint()  # stop or skip clicked while paused
 
     def sleep(self, seconds):
         self._wake.wait(seconds)
         self._wake.clear()
-        if self._stop.is_set():
+        if self._stop.is_set() or self._left_behind():
             raise T.Stopped()
 
     def should_restart(self):
-        return self._restart.is_set() or self._stop.is_set()
+        return self._restart.is_set() or self._stop.is_set() or self._left_behind()
 
     def pick(self, ready):
         with self.lock:
@@ -298,6 +319,9 @@ class Engine(T.Hooks):
         return ready[0]
 
     def progress(self, audio, percent):
+        if self._left_behind():
+            return
+        self._alive = time.time()
         # While a long file runs, look at the Inbox every 10 s so the Queue
         # tab shows newly added or retried files straight away.
         if self.transcriber and time.time() - self._last_peek > 10:
@@ -315,6 +339,18 @@ class Engine(T.Hooks):
         self._update(percent=percent, eta=eta)
 
     def event(self, kind, **data):
+        if self._left_behind():
+            # A frozen worker that came back to life: only good news counts
+            # (its transcript was written after all).
+            if kind == "done":
+                with self.lock:
+                    self.issues.pop(data["audio"].name, None)
+                self.events.put((kind, data))
+            return
+        if kind in ("started", "done", "failed", "skipped", "stalled"):
+            self._stall.clear()
+            self._stall_asked = None
+            self._alive = time.time()
         if kind == "started":
             self._skip.clear()  # a late click must not skip the next file
             self._file_started = time.time()
@@ -326,11 +362,16 @@ class Engine(T.Hooks):
                 self.state["queue"] = [q for q in self.state["queue"] if q[0] != name]
             self._update(phase="working", file=name, percent=0.0, eta=None,
                          message=f"Transcribing {name}")
-        elif kind in ("done", "failed", "skipped"):
+        elif kind in ("done", "failed", "skipped", "stalled"):
             name = data["audio"].name
             with self.lock:
                 if kind == "failed":
                     self.issues[name] = ("failed", data["error"], time.time())
+                elif kind == "stalled":
+                    at = time.strftime("%H:%M", time.localtime(data["retry_at"]))
+                    self.issues[name] = ("retry", f"It stopped making progress "
+                                                  f"({data['why']}). Trying again at {at}.",
+                                         time.time())
                 elif kind == "skipped":
                     self.issues[name] = ("skipped", "Skipped while transcribing", time.time())
                 else:
@@ -356,6 +397,52 @@ class Engine(T.Hooks):
         elif kind == "idle":
             self._update(phase="idle", message="All caught up – waiting for new files")
 
+    # --- stuck-file watchdog ---------------------------------------------
+
+    STALL_GRACE = 120  # seconds to wait for a stuck file to stop by itself
+
+    def stall_minutes(self):
+        try:
+            return max(1, int(self.transcriber.config.get("stall_minutes", T.STALL_MINUTES)))
+        except Exception:
+            return T.STALL_MINUTES
+
+    def _watch(self):
+        """Every 10 s: if the current file has shown no sign of life for
+        STALL_MINUTES, ask it to stop (it's tried again later). If it doesn't
+        stop either (frozen waiting on the network or disk), leave it behind
+        and start a fresh worker, so the queue keeps moving."""
+        while not self._stop.wait(10):
+            name = self.state.get("file")
+            if not name or self._paused.is_set():
+                continue
+            if time.time() - self._alive < self.stall_minutes() * 60:
+                continue
+            if self._stall_asked is None:
+                self._stall_asked = time.time()
+                log.warning("No progress on %s for %d minutes: stopping it and moving on.",
+                            name, self.stall_minutes())
+                self._update(message=f"{name} stopped making progress – moving on...")
+                self._stall.set()
+            elif time.time() - self._stall_asked > self.STALL_GRACE:
+                self._leave_behind(name)
+
+    def _leave_behind(self, name):
+        old, transcriber = self.thread, self.transcriber
+        log.error("%s is still stuck (waiting for the network or disk?). Leaving it and "
+                  "carrying on with the next file.", name)
+        self._abandoned.add(old)
+        self._stall.clear()
+        self._stall_asked = None
+        if transcriber is not None and self.inbox is not None:
+            transcriber.note_stalled(self.inbox / name, f"frozen for over "
+                                                        f"{self.stall_minutes()} minutes")
+        self._update(file=None, percent=0.0, eta=None, phase="idle",
+                     message="Checking the Inbox...")
+        self._alive = time.time()
+        self.thread = threading.Thread(target=self._run, name="engine", daemon=True)
+        self.thread.start()
+
     # --- internals --------------------------------------------------------
 
     def _update(self, **changes):
@@ -367,8 +454,8 @@ class Engine(T.Hooks):
             self.state.update(changes)
 
     def _run(self):
-        model, model_key, locked_folder = None, None, self.locked_folder
-        while not self._stop.is_set():
+        locked_folder = self.locked_folder
+        while not self._stop.is_set() and not self._left_behind():
             self._restart.clear()
             try:
                 config = T.load_config()
@@ -383,37 +470,41 @@ class Engine(T.Hooks):
                             "Choose another folder under Settings → Folders.") from None
                 if input_dir != locked_folder:
                     T.ensure_single_instance(input_dir)
-                    locked_folder = input_dir
+                    locked_folder = self.locked_folder = input_dir
                     with self.lock:  # different Inbox: forget the old queue
                         self.priority.clear()
                         self.state["queue"] = []
                 self.inbox = input_dir
 
                 key = (config["model_size"], config["device"])
-                if key != model_key:
-                    model = None  # free the old model's memory first
+                if key != self._model_key:
+                    self._model = None  # free the old model's memory first
                     self._update(phase="loading", error=None,
                                  message=f"Loading the {config['model_size']} model – the "
                                          "first time it is downloaded, which can take a while...")
-                    model = T.load_model(config)
-                    model_key = key
-                    where = "GPU" if getattr(getattr(model, "model", None), "device", "cpu") == "cuda" else "CPU"
+                    self._model = T.load_model(config)
+                    self._model_key = key
+                    where = ("GPU" if getattr(getattr(self._model, "model", None), "device",
+                                              "cpu") == "cuda" else "CPU")
                     self._update(model=f"{config['model_size']} on {where}")
+                model = self._model
 
                 self._update(phase="idle", error=None, message="Checking the Inbox...")
-                self.transcriber = T.Transcriber(model, config, self, failed=self.skipped)
+                self.transcriber = T.Transcriber(model, config, self, failed=self.skipped,
+                                                 retry_later=self.retry_later)
                 self.transcriber.run_forever()
             except T.Stopped:
                 break
             except Exception as e:  # a UserError or anything unexpected
                 if not isinstance(e, T.UserError):
                     T.file_only.error("Engine error:\n%s", T.traceback.format_exc())
-                    model_key = None  # reload everything on retry
+                    self._model_key = None  # reload everything on retry
                 log.error("%s", e)
                 self._update(phase="error", error=str(e), file=None,
                              message="Stopped – fix the problem below, then click Try again")
                 # Wait for a settings change or "Try again", then retry.
-                while not (self._restart.is_set() or self._stop.is_set()):
+                while not (self._restart.is_set() or self._stop.is_set()
+                           or self._left_behind()):
                     self._wake.wait(1)
                     self._wake.clear()
 
@@ -4440,7 +4531,8 @@ def build_app_class():
                 text = ctk.CTkFrame(row, fg_color="transparent")
                 text.pack(side="left", fill="x", expand=True, padx=(14, 0), pady=6)
                 ctk.CTkLabel(text, text=shorten(name, 58), anchor="w").pack(fill="x")
-                label, colour = ("Failed", RED) if kind == "failed" else ("Skipped", AMBER)
+                label, colour = {"failed": ("Failed", RED),
+                                 "retry": ("Will retry", BLUE)}.get(kind, ("Skipped", AMBER))
                 status = ctk.CTkFrame(text, fg_color="transparent")
                 status.pack(fill="x")
                 ctk.CTkLabel(status, text=label, text_color=colour, font=font(11, "bold")
@@ -4550,6 +4642,10 @@ def build_app_class():
                 self.notify("Transcript ready", f"{name} ({format_duration(data['seconds'])})")
             elif kind == "failed":
                 self.notify("Could not transcribe", f"{name}: {shorten(data['error'], 120)}")
+            elif kind == "stalled":
+                at = time.strftime("%H:%M", time.localtime(data["retry_at"]))
+                self.notify("A file got stuck", f"{name} stopped making progress. Moving on; "
+                                                f"it will be tried again at {at}.")
             self.last_completed_scan = 0.0  # rescan now
 
         # =================================================================

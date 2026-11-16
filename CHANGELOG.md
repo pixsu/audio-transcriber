@@ -6,6 +6,19 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.30.0] - 2026-11-16
+
+### Added
+- **A stuck file no longer holds up the queue.** If the file being
+  transcribed shows no progress for 20 minutes (for example, the network
+  share froze in the middle of reading it), it's stopped and the next file
+  starts. If it's frozen so hard that it can't even stop (waiting on a dead
+  network connection), it's left behind and a fresh worker carries on.
+  The stuck file shows in Issues as "Will retry" and is tried again 30
+  minutes later. If it gets stuck a second time, it's marked Failed. You
+  also get a notification each time. Paused time doesn't count. The limit
+  can be changed with `"stall_minutes"` in config.json.
+
 ## [1.29.2] - 2026-11-12
 
 ### Fixed
