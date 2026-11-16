@@ -22,7 +22,9 @@ import logging
 import logging.handlers
 import os
 import re
+import shutil
 import socket
+import stat
 import sys
 import time
 
@@ -35,7 +37,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.31.0"
+__version__ = "1.32.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -63,6 +65,12 @@ STALL_TRIES = 2             # stuck this many times: give up (Issues tab)
 # failures pass: the network was down, the file was still locked, ...).
 # After the last one it stays Failed until it changes or Retry is clicked.
 FAIL_RETRY_MINUTES = (30, 120, 360)
+# Free disk space where transcripts and the log are written: below the first
+# a warning, below the second new files wait (so a full disk can never cut a
+# transcript off). Work carries on once there's a little more than that.
+DISK_WARN_GB = 5
+DISK_PAUSE_GB = 1
+DISK_MARGIN_GB = 0.5
 
 
 class Hooks:
@@ -1217,6 +1225,39 @@ def _transcribe_file(model, audio_path: Path, txt_path: Path, config: dict,
 # Folder scanning
 # ---------------------------------------------------------------------------
 
+class FolderUnreachable(OSError):
+    """The Inbox or Transcripts folder can't be reached right now."""
+
+
+def folder_problem(folder: Path):
+    """None if the folder is there; otherwise why not ("The network path was
+    not found", ...): a network share that dropped, a drive letter that
+    changed, a USB drive that was unplugged."""
+    try:
+        st = os.stat(folder)
+    except OSError as e:
+        return (e.strerror or str(e)).strip().rstrip(".")
+    if not stat.S_ISDIR(st.st_mode):
+        return "it isn't a folder"
+    return None
+
+
+def free_gb(folder):
+    """Free space on the drive holding folder, in GB (None if unknown)."""
+    try:
+        return shutil.disk_usage(folder).free / 1024 ** 3
+    except (OSError, ValueError):
+        return None
+
+
+def drive_name(folder) -> str:
+    """"drive D:", or the network share's name."""
+    anchor = Path(folder).anchor.rstrip("\\/")
+    if len(anchor) == 2 and anchor[1] == ":":
+        return f"drive {anchor.upper()}"
+    return anchor or str(folder)
+
+
 def list_audio_entries(input_dir: Path, file_types) -> dict:
     """Audio/video files directly in input_dir (no subfolders), from ONE
     folder listing: name -> (path, size, modified, created).
@@ -1319,6 +1360,8 @@ class OutputNames:
         self.index_path = output_dir / self.INDEX_NAME
         self.owners = {}  # "song.txt" (lowercase) -> "song.mp3"
         self.unsaved = False
+        # False if the folder couldn't be reached: read it again once it can.
+        self.loaded = folder_problem(output_dir) is None
         try:
             data = json.loads(self.index_path.read_text(encoding="utf-8"))
             self.owners = {k.lower(): v for k, v in data.items()}
@@ -1541,6 +1584,10 @@ class Transcriber:
         # the Transcripts folder listing: lowercase name -> modified time.
         self.listed = {}
         self._outputs = None
+        # Problems shown in the window: "folder"/"disk" -> (level "stop" or
+        # "warn", title, detail). See check_health.
+        self.alerts = {}
+        self.disk_level = "ok"  # "ok", "low" or "full"
 
     def is_claimed_by_other_pc(self, txt: Path) -> bool:
         """True if another PC is working on this transcript right now."""
@@ -1639,6 +1686,13 @@ class Transcriber:
         queue order, all files still to do, and whether a file was seen for
         the first time (so we re-check it soon).
         """
+        gone = self.folder_problems()
+        if gone:
+            # (An empty listing would look like an empty Inbox, or like
+            # nothing in the Inbox has a transcript yet.)
+            raise FolderUnreachable("; ".join(f"{f} ({why})" for _, f, why in gone))
+        if not self.names.loaded:
+            self.names = OutputNames(self.output_dir)
         self.listed = list_audio_entries(self.input_dir, self.config["file_types"])
         all_files = sorted((v[0] for v in self.listed.values()), key=lambda p: p.name.lower())
         self._outputs = folder_listing(self.output_dir)
@@ -1685,8 +1739,10 @@ class Transcriber:
         try:
             got_it = claim.acquire()
         except OSError as e:
-            # e.g. no write permission in the output folder, or the network
-            # share is down. Tried again later (not in a tight loop).
+            if self.check_health():
+                return  # the folder is gone or the disk is full: wait for it
+            # e.g. no write permission in the output folder. Tried again
+            # later (not in a tight loop).
             self.note_failed(audio, f"couldn't create {claim.path.name} ({e})")
             return
         if not got_it:
@@ -1729,7 +1785,17 @@ class Transcriber:
             self.hooks.event("skipped", audio=audio)
         except Exception as e:
             file_only.error("Details for %s:\n%s", audio.name, traceback.format_exc())
-            self.note_failed(audio, str(e) or type(e).__name__)
+            if self.check_health():
+                # The network folder dropped or the disk filled up while it
+                # ran: not the file's fault, so it isn't counted as a failed
+                # attempt. It's done again once the problem is gone.
+                problem = next(iter(self.alerts.values()))[1]
+                log.warning("%s was interrupted (%s). It will be transcribed again once "
+                            "that's fixed.", audio.name, problem)
+                self.pending_sizes.pop(audio.name, None)
+                self.hooks.event("interrupted", audio=audio, why=problem)
+            else:
+                self.note_failed(audio, str(e) or type(e).__name__)
         finally:
             claim.release()
 
@@ -1771,6 +1837,80 @@ class Transcriber:
         self.hooks.event("retry", audio=audio, retry_at=when, why=error,
                          attempt=failures + 1, attempts=attempts)
 
+    def folder_problems(self) -> list:
+        """[(name, folder, why)] for the Inbox/Transcripts folders that
+        can't be reached."""
+        return [(which, folder, why) for which, folder in
+                (("Inbox", self.input_dir), ("Transcripts", self.output_dir))
+                if (why := folder_problem(folder))]
+
+    def _alert(self, key: str, alert) -> None:
+        """Note a new, changed or cleared problem: logged once, and shown in
+        the window."""
+        old = self.alerts.get(key)
+        if old == alert:
+            return
+        if alert:
+            self.alerts[key] = alert
+            if not old or old[:2] != alert[:2]:
+                (log.error if alert[0] == "stop" else log.warning)("%s. %s", alert[1], alert[2])
+        else:
+            del self.alerts[key]
+            log.info("%s", "The folders can be reached again. Carrying on." if key == "folder"
+                     else "There's enough free disk space again.")
+        self.hooks.event("alert", key=key, alert=alert)
+
+    def check_health(self) -> bool:
+        """Check that both folders can be reached and that there's free disk
+        space. True if new work has to wait until that's fixed."""
+        gone = self.folder_problems()
+        if gone:
+            both = len(gone) > 1
+            names = " and ".join(which for which, _, _ in gone)
+            self._alert("folder", (
+                "stop", f"Can't reach the {names} folder{'s' if both else ''}",
+                "; ".join(f"{folder} ({why})" for _, folder, why in gone)
+                + f". Waiting for {'them' if both else 'it'} to come back (network share "
+                  "down, or drive letter changed?). Nothing is lost: transcribing carries "
+                  "on by itself once it's back."))
+        else:
+            self._alert("folder", None)
+
+        # The emptiest of the drives we write to.
+        free, where = None, None
+        for folder in (self.output_dir, LOG_PATH.parent):
+            gb = free_gb(folder)
+            if gb is not None and (free is None or gb < free):
+                free, where = gb, folder
+        if free is not None:
+            try:
+                warn = float(self.config.get("disk_warn_gb", DISK_WARN_GB))
+                pause = float(self.config.get("disk_pause_gb", DISK_PAUSE_GB))
+            except (TypeError, ValueError):
+                warn, pause = DISK_WARN_GB, DISK_PAUSE_GB
+            level, margin = self.disk_level, DISK_MARGIN_GB
+            if free < pause or (level == "full" and free < pause + margin):
+                level = "full"
+            elif free < warn or (level != "ok" and free < warn + margin):
+                level = "low"
+            else:
+                level = "ok"
+            self.disk_level = level
+            drive = drive_name(where)
+            if level == "full":
+                self._alert("disk", (
+                    "stop", f"Almost out of disk space on {drive}",
+                    f"Only {free:.1f} GB free. New files wait until at least "
+                    f"{pause + margin:g} GB is free, so no transcript gets cut off. "
+                    "Delete or move some files to make room."))
+            elif level == "low":
+                self._alert("disk", (
+                    "warn", f"Disk space is running low on {drive}",
+                    f"{free:.1f} GB free. Transcribing pauses below {pause:g} GB."))
+            else:
+                self._alert("disk", None)
+        return any(a[0] == "stop" for a in self.alerts.values())
+
     def run_forever(self) -> None:
         """Main loop: always transcribe the next file in queue order (newest
         first by default), re-checking the folder between files so a newly
@@ -1780,10 +1920,19 @@ class Transcriber:
         idle = False
         while not hooks.should_restart():
             hooks.checkpoint()
+            blocked = self.check_health()
+            if "folder" in self.alerts:
+                idle = False
+                hooks.sleep(min(interval, 15))  # notice quickly when it's back
+                continue
             try:
                 ready, waiting, saw_new_file = self.scan()
             except KeyboardInterrupt:
                 raise
+            except FolderUnreachable:
+                idle = False  # (gone since the check above; shown next time round)
+                hooks.sleep(min(interval, 15))
+                continue
             except Exception as e:
                 # e.g. a network folder is temporarily unavailable - try again.
                 log.error("Error while checking folder: %s", e)
@@ -1792,6 +1941,11 @@ class Transcriber:
             hooks.event("queue", waiting=len(waiting),
                         files=sort_queue(waiting, self.config["order"], self.listed),
                         listed=self.listed)
+
+            if blocked:  # disk almost full: new files wait
+                idle = False
+                hooks.sleep(min(interval, 30))
+                continue
 
             if saw_new_file and not ready:
                 # Something new arrived: look again soon (it starts once it has

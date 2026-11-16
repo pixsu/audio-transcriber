@@ -6,6 +6,26 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.32.0] - 2026-11-16
+
+### Added
+- **A red banner when the Inbox or Transcripts folder can't be reached.**
+  Before, a dropped network share or a changed drive letter just looked
+  like an empty Inbox ("All caught up"). Now the window shows what's wrong,
+  you get a notification, and nothing is started until the folder is back.
+  The app then carries on by itself (it checks every few seconds; "Check
+  now" checks at once). This also works if the folder is missing when the
+  app starts, instead of stopping with an error.
+- **Low disk space warning.** Below 5 GB free (on the Transcripts drive or
+  this PC's drive) an amber banner warns you. Below 1 GB new files wait,
+  with a red banner and a notification, so a transcript is never cut off
+  by a full disk. Work resumes by itself once 1.5 GB is free.
+
+### Changed
+- A file interrupted because its folder dropped or the disk filled up is no
+  longer counted as a failed attempt: it's simply done again once the
+  problem is fixed.
+
 ## [1.31.0] - 2026-11-16
 
 ### Added

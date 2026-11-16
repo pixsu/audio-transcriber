@@ -138,6 +138,14 @@ def tune_light_palette():
     light("CTkTextbox", fg_color="#FFFFFF", border_color="#E3E5E8", text_color=text,
           scrollbar_button_color="#C9CED4", scrollbar_button_hover_color="#A8AFB7")
     light("CTkScrollableFrame", label_fg_color="#F6F7F9")
+# Notifications when a problem that held work up is gone.
+ALERT_CLEARED = {
+    "folder": ("Folders are back", "The Inbox and Transcripts folders can be reached again. "
+                                   "Transcribing carries on."),
+    "disk": ("Disk space is OK again", "There's enough free space again. "
+                                       "Transcribing carries on."),
+}
+
 PHASES = {  # phase -> (title, colour)
     "starting": ("Starting", BLUE),
     "loading": ("Loading model", BLUE),
@@ -145,6 +153,7 @@ PHASES = {  # phase -> (title, colour)
     "working": ("Transcribing", GREEN),
     "paused": ("Paused", AMBER),
     "error": ("Needs attention", RED),
+    "blocked": ("Needs attention", RED),   # folder unreachable / disk full: waiting
     "stopping": ("Stopping", GRAY),
 }
 
@@ -192,6 +201,9 @@ class Engine(T.Hooks):
         # request to stop the current file, and worker threads left behind
         # because they were frozen (e.g. waiting on a dead network share).
         self.retry_later = {}  # shared with the Transcriber
+        # Problems to show in a banner: "folder"/"disk" -> (level "stop" or
+        # "warn", title, detail). "stop" ones keep new files waiting.
+        self.alerts = {}
         self._alive = time.time()
         self._stall = threading.Event()
         self._stall_asked = None
@@ -259,7 +271,14 @@ class Engine(T.Hooks):
         else:
             self._paused.clear()
             self._wake.set()
-        self._update(phase="paused" if paused else ("working" if self.state["file"] else "idle"))
+        if paused or self.state["file"]:
+            self._update(phase="paused" if paused else "working")
+        else:
+            self._update(phase="blocked" if self._blocked() else "idle")
+
+    def _blocked(self):
+        with self.lock:
+            return next((a[1] for a in self.alerts.values() if a[0] == "stop"), None)
 
     @property
     def paused(self) -> bool:
@@ -274,6 +293,7 @@ class Engine(T.Hooks):
         with self.lock:
             snap = dict(self.state)
             snap["issues"] = dict(self.issues)
+            snap["alerts"] = dict(self.alerts)
             return snap
 
     # --- Hooks (called from the engine thread) ----------------------------
@@ -347,7 +367,7 @@ class Engine(T.Hooks):
                     self.issues.pop(data["audio"].name, None)
                 self.events.put((kind, data))
             return
-        if kind in ("started", "done", "failed", "skipped", "stalled", "retry"):
+        if kind in ("started", "done", "failed", "skipped", "stalled", "retry", "interrupted"):
             self._stall.clear()
             self._stall_asked = None
             self._alive = time.time()
@@ -362,7 +382,7 @@ class Engine(T.Hooks):
                 self.state["queue"] = [q for q in self.state["queue"] if q[0] != name]
             self._update(phase="working", file=name, percent=0.0, eta=None,
                          message=f"Transcribing {name}")
-        elif kind in ("done", "failed", "skipped", "stalled", "retry"):
+        elif kind in ("done", "failed", "skipped", "stalled", "retry", "interrupted"):
             name = data["audio"].name
             with self.lock:
                 if kind == "failed":
@@ -379,10 +399,26 @@ class Engine(T.Hooks):
                                          time.time())
                 elif kind == "skipped":
                     self.issues[name] = ("skipped", "Skipped while transcribing", time.time())
+                elif kind == "interrupted":
+                    pass  # (the folder or disk problem shows in a banner)
                 else:
                     self.issues.pop(name, None)
             self._update(file=None, percent=0.0, eta=None)
+            blocked = self._blocked()
+            if kind == "interrupted" and blocked:
+                self._update(phase="blocked", message=blocked)
             self.events.put((kind, data))
+        elif kind == "alert":
+            with self.lock:
+                if data["alert"]:
+                    self.alerts[data["key"]] = data["alert"]
+                else:
+                    self.alerts.pop(data["key"], None)
+            blocked = self._blocked()
+            if blocked and not self.state["file"]:
+                self._update(phase="blocked", message=blocked)
+            elif not blocked and self.state["phase"] == "blocked":
+                self._update(phase="idle", message="Checking the Inbox...")
         elif kind == "queue":
             items, listed = [], data.get("listed") or {}
             for p in data["files"]:
@@ -466,10 +502,17 @@ class Engine(T.Hooks):
                 config = T.load_config()
                 input_dir = Path(config["input_folder"])
                 output_dir = Path(config["output_folder"])
+                with self.lock:
+                    self.alerts.clear()  # checked again by the new loop
                 for folder in (input_dir, output_dir):
                     try:
                         folder.mkdir(parents=True, exist_ok=True)
                     except OSError as e:
+                        if not os.path.isdir(folder.anchor):
+                            # The drive or network share isn't there right now
+                            # (not plugged in, not connected yet): wait for it
+                            # with a banner instead of stopping.
+                            continue
                         raise T.UserError(
                             f"Can't use the folder {folder} ({e.strerror or e}).\n"
                             "Choose another folder under Settings → Folders.") from None
@@ -1547,6 +1590,7 @@ def build_app_class():
             left = ctk.CTkFrame(self, fg_color="transparent")
             left.grid(row=1, column=0, sticky="nsew", padx=(16, 8), pady=(0, 8))
             self._build_update_banner(left)
+            self._build_alert_banner(left)
             self._build_status_card(left)
             self._build_tabs(left)
             self._build_settings()
@@ -1640,6 +1684,53 @@ def build_app_class():
                                            font=font(11), height=16)
             self.banner_sub.pack(fill="x")
             self.update_state = None   # None, "downloading", "waiting", "installing"
+
+        def _build_alert_banner(self, parent):
+            """A red (or amber) banner while a folder can't be reached or the
+            disk is (nearly) full."""
+            self.alert_banner = ctk.CTkFrame(parent, corner_radius=12, border_width=1)
+            ghost_button(self.alert_banner, "Check now", self.engine.wake, width=96, height=30
+                         ).pack(side="right", padx=(4, 12), pady=10)
+            texts = ctk.CTkFrame(self.alert_banner, fg_color="transparent")
+            texts.pack(side="left", fill="x", expand=True, padx=16, pady=8)
+            self.alert_title = ctk.CTkLabel(texts, text="", anchor="w", font=font(13, "bold"),
+                                            height=18)
+            self.alert_title.pack(fill="x")
+            self.alert_detail = ctk.CTkLabel(texts, text="", anchor="w", justify="left",
+                                             font=font(12), wraplength=560)
+            self.alert_detail.pack(fill="x")
+            self.alert_shown = None
+            self.alerts_seen = {}
+
+        def refresh_alerts(self, s):
+            alerts = s.get("alerts") or {}
+            # Notify when a problem starts, and when one that held work up ends.
+            for key, (level, title, detail) in alerts.items():
+                if self.alerts_seen.get(key) != (level, title):
+                    self.notify(title, shorten(detail, 150))
+            for key, (level, _) in self.alerts_seen.items():
+                if key not in alerts and level == "stop":
+                    self.notify(*ALERT_CLEARED[key])
+            self.alerts_seen = {k: a[:2] for k, a in alerts.items()}
+
+            shown = max(alerts.values(), key=lambda a: a[0] == "stop") if alerts else None
+            if shown == self.alert_shown:
+                return
+            self.alert_shown = shown
+            if not shown:
+                self.alert_banner.pack_forget()
+                return
+            level, title, detail = shown
+            red = level == "stop"
+            self.alert_banner.configure(
+                fg_color=("#fdecea", "#3a2020") if red else ("#fff6e0", "#3a3120"),
+                border_color=("#e6a19e", "#7a3633") if red else ("#e8c46a", "#6b5622"))
+            self.alert_title.configure(text=f"⚠  {title}",
+                                       text_color=("#b52b27", "#ff8a85") if red
+                                       else ("#8a6100", "#f0c75e"))
+            self.alert_detail.configure(text=detail)
+            if not self.alert_banner.winfo_ismapped():
+                self.alert_banner.pack(fill="x", pady=(0, 12), before=self.status_card)
 
         def _build_status_card(self, parent):
             card = ctk.CTkFrame(parent, corner_radius=12)
@@ -4141,6 +4232,7 @@ def build_app_class():
                     event = self.engine.events.get_nowait()
                     self.guarded(lambda: self.on_engine_event(*event))
                 s = self.engine.snapshot()
+                self.guarded(lambda: self.refresh_alerts(s))
                 self.guarded(lambda: self.refresh_status(s))
                 self.guarded(lambda: self.refresh_tab_labels(s))
                 self.guarded(lambda: self.refresh_tabs(s))
@@ -4251,6 +4343,11 @@ def build_app_class():
                     self.detail_text.configure(
                         text="Drop audio files into the Inbox or onto this window, or click "
                              "Add files.", text_color=GRAY)
+                elif phase == "blocked":
+                    self.file_text.configure(text=s["message"])
+                    self.detail_text.configure(
+                        text="Waiting – transcribing carries on by itself once this is fixed.",
+                        text_color=RED)
                 elif phase == "paused":
                     self.file_text.configure(text="Paused")
                     self.detail_text.configure(text="Click Resume to continue.", text_color=GRAY)
@@ -4640,6 +4737,8 @@ def build_app_class():
             self.activity.configure(state="disabled")
 
         def on_engine_event(self, kind, data):
+            if "audio" not in data:
+                return
             name = data["audio"].name
             if kind == "done":
                 self.took[data["txt"].name] = data["seconds"]
