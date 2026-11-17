@@ -74,11 +74,12 @@ SETTING_NAMES = {
     "label_music": "Label music and songs",
     "use_filename_hint": "Use file name as a hint", "input_folder": "Inbox folder",
     "output_folder": "Transcripts folder", "_autostart": "Start with Windows",
-    "check_for_updates": "Check for updates",
+    "check_for_updates": "Check for updates", "stations": "Stations",
 }
 # Changes with bigger effects (a download, folders, Windows start-up) are
 # confirmed in a dialog before they're applied.
-IMPORTANT_SETTINGS = ("model_size", "device", "input_folder", "output_folder", "_autostart")
+IMPORTANT_SETTINGS = ("model_size", "device", "input_folder", "output_folder", "_autostart",
+                      "stations")
 MODEL_DOWNLOAD = {"tiny": "75 MB", "base": "145 MB", "small": "480 MB",
                   "medium": "1.5 GB", "large-v3-turbo": "1.6 GB", "large-v3": "3 GB"}
 
@@ -232,9 +233,24 @@ class Engine(T.Hooks):
         self._paused.clear()  # a paused file can be skipped too
         self._update(message="Skipping...")
 
+    def path_of(self, name):
+        """Where a recording called `name` is. In station mode it's in one of
+        the station folders, so look it up in the last listing first."""
+        if not self.inbox or not name:
+            return None
+        t = self.transcriber
+        hit = t.listed.get(name) if t is not None else None
+        if hit:
+            return hit[0]
+        for station in (t.stations if t is not None else ()):
+            p = self.inbox / station / name
+            if p.exists():
+                return p
+        return self.inbox / name
+
     def skip_waiting(self, name):
         """Take a waiting file out of the queue (until Retry or restart)."""
-        path = self.inbox / name if self.inbox else None
+        path = self.path_of(name)
         if path is None:
             return
         with self.lock:
@@ -349,8 +365,7 @@ class Engine(T.Hooks):
             try:
                 _, waiting, _ = self.transcriber.scan()
                 self.event("queue", waiting=len(waiting),
-                           files=T.sort_queue(waiting, self.transcriber.config["order"],
-                                              self.transcriber.listed),
+                           files=self.transcriber.sorted_queue(waiting),
                            listed=self.transcriber.listed)
             except Exception:
                 pass
@@ -380,8 +395,10 @@ class Engine(T.Hooks):
                 if name in self.priority:
                     self.priority.remove(name)
                 self.state["queue"] = [q for q in self.state["queue"] if q[0] != name]
+            station = data["audio"].parent.name if (
+                self.inbox and data["audio"].parent != self.inbox) else None
             self._update(phase="working", file=name, percent=0.0, eta=None,
-                         message=f"Transcribing {name}")
+                         message=f"Transcribing {station + ' · ' if station else ''}{name}")
         elif kind in ("done", "failed", "skipped", "stalled", "retry", "interrupted"):
             name = data["audio"].name
             with self.lock:
@@ -476,7 +493,7 @@ class Engine(T.Hooks):
         self._stall.clear()
         self._stall_asked = None
         if transcriber is not None and self.inbox is not None:
-            transcriber.note_stalled(self.inbox / name, f"frozen for over "
+            transcriber.note_stalled(self.path_of(name), f"frozen for over "
                                                         f"{self.stall_minutes()} minutes")
         self._update(file=None, percent=0.0, eta=None, phase="idle",
                      message="Checking the Inbox...")
@@ -640,12 +657,18 @@ RISKY_COUNT = 15      # times in the transcripts
 RISKY_FILES = 5       # transcripts it appears in
 
 
+def all_transcripts(folder):
+    """Every .txt in the Transcripts folder, including station subfolders."""
+    folder = Path(folder)
+    return list(folder.glob("*.txt")) + list(folder.glob("*/*.txt"))
+
+
 def word_counts(folder, words, skip=None):
     """{word: (times, transcripts)} for whole-word, any-case matches."""
     pats = {w: re.compile(r"(?<!\w)" + re.escape(w) + r"(?!\w)", re.IGNORECASE) for w in words}
     counts = {w: [0, 0] for w in words}
     try:
-        files = [f for f in Path(folder).glob("*.txt") if not f.name.startswith(".")]
+        files = [f for f in all_transcripts(folder) if not f.name.startswith(".")]
     except OSError:
         files = []
     for f in files:
@@ -1963,7 +1986,14 @@ def build_app_class():
                 lbl = ctk.CTkLabel(card, text="", text_color=GRAY, anchor="w", font=font(11))
                 lbl.grid(row=row * 2 + 1, column=0, columnspan=2, sticky="w", padx=12)
                 self.folder_labels[key] = lbl
-            ctk.CTkFrame(card, height=10, fg_color="transparent").grid(row=4, column=0)
+            ctk.CTkLabel(card, text="Stations", anchor="w", font=font(12, "bold")
+                         ).grid(row=4, column=0, sticky="w", padx=12, pady=(10, 0))
+            ghost_button(card, "Choose...", self.choose_stations, width=80
+                         ).grid(row=4, column=1, sticky="e", padx=12, pady=(10, 0))
+            self.stations_label = ctk.CTkLabel(card, text="", text_color=GRAY, anchor="w",
+                                               justify="left", font=font(11), wraplength=290)
+            self.stations_label.grid(row=5, column=0, columnspan=2, sticky="w", padx=12)
+            ctk.CTkFrame(card, height=10, fg_color="transparent").grid(row=6, column=0)
 
             card = self._section(panel, "Queue & system")
             self.order = self._field(card, 0, "Order", lambda p: Select(
@@ -2036,6 +2066,8 @@ def build_app_class():
                 return str(value).strip().lower()
             if key in ("input_folder", "output_folder"):
                 return str(Path(value))
+            if key == "stations":
+                return T.clean_stations(value)
             if key in ("vad_filter", "include_timestamps", "label_music", "use_filename_hint",
                        "check_for_updates"):
                 return bool(value)
@@ -2044,7 +2076,7 @@ def build_app_class():
         def shown_values(self):
             """Saved settings with any not-yet-applied changes on top."""
             c = self.config_raw()
-            keys = WINDOW_SETTINGS + ("input_folder", "output_folder", "_autostart")
+            keys = WINDOW_SETTINGS + ("input_folder", "output_folder", "_autostart", "stations")
             values = {k: self.current_value(k, c) for k in keys}
             values.update(self.pending)
             return values
@@ -2065,6 +2097,11 @@ def build_app_class():
                                   text_color=AMBER)
                 else:
                     lbl.configure(text=short_path(v[key]), text_color=GRAY)
+            text = self.describe("stations", v["stations"])
+            if "stations" in self.pending:
+                self.stations_label.configure(text=text + "  (not applied yet)", text_color=AMBER)
+            else:
+                self.stations_label.configure(text=text, text_color=GRAY)
             self.refresh_pending()
 
         # --- staging: nothing is saved until Apply -------------------------
@@ -2077,7 +2114,7 @@ def build_app_class():
             self.saved_text.configure(text="")
             if key == "label_music":
                 self.show_vad_switch(not value)
-            if key in self.folder_labels:
+            if key in self.folder_labels or key == "stations":
                 self.load_settings_into_widgets()
             else:
                 self.refresh_pending()
@@ -2110,6 +2147,12 @@ def build_app_class():
                 return "On" if value else "Off"
             if key in ("input_folder", "output_folder"):
                 return short_path(value, 60)
+            if key == "stations":
+                if not value:
+                    return "None: files directly in the Inbox"
+                names = ", ".join(value[:6]) + (f" and {len(value) - 6} more"
+                                                if len(value) > 6 else "")
+                return f"{len(value)} station{'s' if len(value) > 1 else ''}: {names}"
             return str(value)
 
         def apply_changes(self):
@@ -2138,6 +2181,12 @@ def build_app_class():
             if "output_folder" in changes:
                 notes.append("New transcripts go to the new folder; existing ones stay where "
                              "they are.")
+            if "stations" in changes:
+                notes.append("Only the ticked station folders in the Inbox are transcribed. "
+                             "Each station's transcripts go to a folder of the same name in "
+                             "the Transcripts folder." if changes["stations"] else
+                             "Station folders are no longer watched; only files directly in "
+                             "the Inbox are transcribed.")
             if "_autostart" in changes:
                 notes.append("The program will start hidden in the tray when you log in."
                              if changes["_autostart"] else
@@ -2164,7 +2213,7 @@ def build_app_class():
             self.pending.clear()
             if config_changes:
                 self.engine.settings_changed()
-            if any(k in changes for k in ("input_folder", "output_folder")):
+            if any(k in changes for k in ("input_folder", "output_folder", "stations")):
                 self.completed, self.last_completed_scan = [], 0.0
                 self.view_keys.clear()
             if "output_folder" in changes:
@@ -2216,6 +2265,95 @@ def build_app_class():
                                        "must be different folders.", parent=self)
                 return
             self.stage(key, str(chosen))
+
+        def choose_stations(self):
+            """Tick which station folders in the Inbox to transcribe."""
+            values = self.shown_values()
+            inbox, out = Path(values["input_folder"]), Path(values["output_folder"])
+            found = T.find_stations(inbox, out)
+            ticked = {s.lower() for s in values["stations"]}
+            # Ticked stations whose folder is gone still show, so they can be unticked.
+            names = sorted(set(found) | {s for s in values["stations"]
+                                         if s.lower() not in {f.lower() for f in found}},
+                           key=str.lower)
+            if not names:
+                messagebox.showinfo(
+                    "Stations", f"There are no folders in the Inbox:\n{inbox}\n\n"
+                    "Station mode is for an Inbox that holds one folder per station "
+                    "(like a logger archive). Choose that folder as the Inbox first.",
+                    parent=self)
+                return
+
+            dlg = ctk.CTkToplevel(self)
+            dlg.title("Stations")
+            dlg.geometry("420x560")
+            dlg.transient(self)
+            dlg.after(100, dlg.grab_set)
+            dlg.grid_columnconfigure(0, weight=1)
+            dlg.grid_rowconfigure(3, weight=1)
+            ctk.CTkLabel(dlg, text="Stations to transcribe", font=font(15, "bold"), anchor="w"
+                         ).grid(row=0, column=0, sticky="w", padx=18, pady=(14, 0))
+            ctk.CTkLabel(dlg, text=f"Folders found in {short_path(str(inbox), 50)}. Each "
+                                   "station's transcripts go to a folder of the same name in "
+                                   "the Transcripts folder.",
+                         text_color=GRAY, font=font(11), anchor="w", justify="left",
+                         wraplength=380).grid(row=1, column=0, sticky="w", padx=18)
+            top = ctk.CTkFrame(dlg, fg_color="transparent")
+            top.grid(row=2, column=0, sticky="ew", padx=18, pady=(10, 6))
+            search = ctk.CTkEntry(top, placeholder_text="Filter stations", height=30)
+            search.pack(side="left", fill="x", expand=True)
+            count = ctk.CTkLabel(top, text="", text_color=GRAY, font=font(11))
+            count.pack(side="right", padx=(10, 0))
+            box = ctk.CTkScrollableFrame(dlg, fg_color=("#FFFFFF", "gray17"), corner_radius=8)
+            box.grid(row=3, column=0, sticky="nsew", padx=18)
+            boxes = {}
+            for name in names:
+                cb = ctk.CTkCheckBox(box, text=name if name in found else f"{name}  (folder not found)",
+                                     font=font(12), checkbox_width=18, checkbox_height=18,
+                                     command=lambda: update_count())
+                if name.lower() in ticked:
+                    cb.select()
+                cb.pack(fill="x", anchor="w", padx=8, pady=3)
+                boxes[name] = cb
+
+            def chosen():
+                return [n for n, cb in boxes.items() if cb.get()]
+
+            def update_count():
+                count.configure(text=f"{len(chosen())} of {len(found)} ticked")
+
+            def filter_list(*_):
+                q = search.get().strip().lower()
+                for cb in boxes.values():
+                    cb.pack_forget()
+                for n, cb in boxes.items():
+                    if q in n.lower():
+                        cb.pack(fill="x", anchor="w", padx=8, pady=3)
+            search.bind("<KeyRelease>", filter_list)
+
+            def set_all(on):
+                q = search.get().strip().lower()
+                for n, cb in boxes.items():
+                    if q in n.lower():
+                        cb.select() if on else cb.deselect()
+                update_count()
+
+            bar = ctk.CTkFrame(dlg, fg_color="transparent")
+            bar.grid(row=4, column=0, sticky="ew", padx=18, pady=12)
+            ghost_button(bar, "Tick all", lambda: set_all(True), width=80).pack(side="left")
+            ghost_button(bar, "Untick all", lambda: set_all(False), width=90
+                         ).pack(side="left", padx=(6, 0))
+
+            def done():
+                self.stage("stations", T.clean_stations(chosen()))
+                dlg.destroy()
+            ctk.CTkButton(bar, text="OK", width=80, height=30, command=done).pack(side="right")
+            ghost_button(bar, "Cancel", dlg.destroy, width=80, height=30
+                         ).pack(side="right", padx=(0, 8))
+            dlg.bind("<Escape>", lambda e: dlg.destroy())
+            update_count()
+            dlg._boxes, dlg._done, dlg._search, dlg._filter = boxes, done, search, filter_list  # (for tests)
+            return dlg
 
         def edit_config(self):
             messagebox.showinfo(
@@ -2717,7 +2855,7 @@ def build_app_class():
             import bisect
             ui = {"ready": False}
             source = self.source_of.get(path.name.lower()) or self.guess_source(path)
-            audio_path = (self.engine.inbox / source) if (source and self.engine.inbox) else None
+            audio_path = self.recording_for(path, source)
             bar = ctk.CTkFrame(win, corner_radius=8, fg_color=("#FFFFFF", "gray17"),
                                border_width=1, border_color=("#E3E5E8", "gray17"))
             bar.grid(row=2, column=0, sticky="ew", padx=16, pady=(8, 0))
@@ -3062,7 +3200,7 @@ def build_app_class():
                     parent=parent)
                 return
             source = self.source_of.get(path.name.lower()) or self.guess_source(path)
-            audio_path = (self.engine.inbox / source) if (source and self.engine.inbox) else None
+            audio_path = self.recording_for(path, source)
             if not audio_path or not audio_path.exists():
                 messagebox.showerror(
                     "Save as jingle",
@@ -3391,8 +3529,8 @@ def build_app_class():
             """The original recording, if it's still in the Inbox."""
             inbox = self.engine.inbox
             if inbox:
-                p = Path(inbox) / name
-                if p.exists():
+                p = self.engine.path_of(name)
+                if p is not None and p.exists():
                     return p
             return None
 
@@ -3899,7 +4037,7 @@ def build_app_class():
                 # Older transcripts with the same mistake.
                 others = []
                 try:
-                    for other in self.output_dir().glob("*.txt"):
+                    for other in all_transcripts(self.output_dir()):
                         if other != path and not other.name.startswith("."):
                             n = count_in_transcript(other, fix)
                             if n:
@@ -4273,7 +4411,7 @@ def build_app_class():
             if waiting and self.engine.inbox:
                 memo_key = (tuple(q[0] for q in s["queue"][:500]), self.details_stamp)
                 if getattr(self, "_waiting_total", (None, 0))[0] != memo_key:
-                    infos = [self.details.get(self.engine.inbox / q[0])
+                    infos = [self.details.get(self.engine.path_of(q[0]))
                              for q in s["queue"][:500]]
                     self._waiting_total = (memo_key,
                                            sum((i or {}).get("duration", 0) for i in infos))
@@ -4301,7 +4439,7 @@ def build_app_class():
             # Details of the file being transcribed.
             meta = ""
             if s["file"] and self.engine.inbox:
-                meta = media_summary(self.details.get(self.engine.inbox / s["file"]), full=True)
+                meta = media_summary(self.details.get(self.engine.path_of(s["file"])), full=True)
             if meta:
                 self.meta_text.configure(text=meta)
                 if not self.meta_text.winfo_ismapped():
@@ -4478,7 +4616,7 @@ def build_app_class():
                 text = ctk.CTkFrame(row, fg_color="transparent")
                 text.pack(side="left", fill="x", expand=True, pady=6)
                 ctk.CTkLabel(text, text=shorten(name, 58), anchor="w").pack(fill="x")
-                info = self.details.get(self.engine.inbox / name) if self.engine.inbox else None
+                info = self.details.get(self.engine.path_of(name)) if self.engine.inbox else None
                 ctk.CTkLabel(text, text=f"{media_summary(info)}  \u00b7  added "
                                         f"{format_when(arrived)}",
                              anchor="w", text_color=GRAY, font=font(11)).pack(fill="x")
@@ -4497,12 +4635,25 @@ def build_app_class():
             self.search_typed = 0.0
             self.focus_set()  # lets the grey hint text show again
 
+        def recording_for(self, txt_path, source):
+            """The recording a transcript was made from. In station mode the
+            transcript sits in Transcripts/<station>, and the recording in
+            Inbox/<station>."""
+            inbox = self.engine.inbox
+            if not (source and inbox):
+                return None
+            folder = Path(txt_path).parent
+            if folder != self.output_dir():
+                return Path(inbox) / folder.name / source
+            return Path(inbox) / source
+
         def guess_source(self, path):
             """For transcripts made before the index existed: match by name."""
             if not self.engine.inbox:
                 return None
             for ext in self.config_raw().get("file_types", []):
-                if (self.engine.inbox / (path.stem + ext)).exists():
+                found = self.recording_for(path, path.stem + ext)
+                if found is not None and found.exists():
                     self.source_of[path.name.lower()] = path.stem + ext
                     return path.stem + ext
             return None
@@ -4590,8 +4741,8 @@ def build_app_class():
                 parts = []
                 duration = None
                 source = self.source_of.get(path.name.lower()) or self.guess_source(path)
-                if source and self.engine.inbox:
-                    audio = self.engine.inbox / source
+                audio = self.recording_for(path, source)
+                if audio is not None:
                     if audio.exists():
                         info = self.details.get(audio)
                         duration = (info or {}).get("duration")
@@ -4678,13 +4829,27 @@ def build_app_class():
             self.engine.retry([name])
             log.info("Retrying %s", name)
 
+        def transcript_folders(self):
+            """The Transcripts folder, then (station mode) each ticked
+            station's subfolder of it."""
+            out = self.output_dir()
+            stations = T.clean_stations(self.config_raw().get("stations"))
+            return [out] + [out / s for s in stations]
+
         def scan_completed(self):
             self.last_completed_scan = time.time()
             try:
                 # One folder listing (it carries every file's dates), not one
                 # network request per transcript.
                 found = []
-                with os.scandir(self.output_dir()) as entries:
+                folders = self.transcript_folders()
+                for folder in folders:
+                    try:
+                        entries = list(os.scandir(folder))
+                    except OSError:
+                        if folder == folders[0]:
+                            raise
+                        continue  # a station with no transcripts yet
                     for e in entries:
                         if e.name.startswith(".") or not e.name.lower().endswith(".txt"):
                             continue
@@ -4702,13 +4867,14 @@ def build_app_class():
                 self.completed = sorted(found, key=lambda mp: mp[0], reverse=True)
             except OSError:
                 self.completed = []
-            try:
-                import json
-                index = self.output_dir() / T.OutputNames.INDEX_NAME
-                with open(index, encoding="utf-8") as f:
-                    self.source_of = {k.lower(): v for k, v in json.load(f).items()}
-            except (OSError, ValueError):
-                self.source_of = {}
+            import json
+            self.source_of = {}
+            for folder in self.transcript_folders():
+                try:
+                    with open(folder / T.OutputNames.INDEX_NAME, encoding="utf-8") as f:
+                        self.source_of.update({k.lower(): v for k, v in json.load(f).items()})
+                except (OSError, ValueError, AttributeError):
+                    pass
             self.took.update(load_timings(self.output_dir()))
 
         def done_today(self):

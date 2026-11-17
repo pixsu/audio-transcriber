@@ -6,6 +6,17 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-11-17
+
+### Added
+- Station mode, for an Inbox that holds one folder per radio station (like a
+  logger archive). Settings → Folders → Stations → Choose... lists the station
+  folders; only the ticked ones are transcribed. Each station's transcripts go
+  to a folder of the same name in the Transcripts folder, and stations take
+  turns hour by hour so every station's newest hour is done first. The
+  recordings themselves are only read, never changed. "(Backup)" copies are
+  skipped.
+
 ## [1.32.0] - 2026-11-16
 
 ### Added

@@ -37,7 +37,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.32.0"
+__version__ = "1.33.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -210,6 +210,11 @@ DEFAULT_CONFIG = {
     "device": "auto",
     # Every hour, check GitHub for a newer version and show a notice.
     "check_for_updates": True,
+    # Station mode: names of subfolders of the Inbox to transcribe (one
+    # folder per radio station, e.g. a logger archive). Each station's
+    # transcripts go to a subfolder of the same name in the Transcripts
+    # folder. Empty = the normal single Inbox (files directly in it).
+    "stations": [],
 }
 
 VALID_MODELS = {"tiny", "base", "small", "medium", "large-v3-turbo", "large-v3"}
@@ -489,7 +494,20 @@ def load_config() -> dict:
     config["file_types"] = {
         "." + str(ext).strip().lower().lstrip(".") for ext in config["file_types"]
     }
+    config["stations"] = clean_stations(config.get("stations"))
     return config
+
+
+def clean_stations(stations) -> list:
+    """The ticked station folder names: plain names only (no paths), no
+    duplicates, sorted."""
+    if not isinstance(stations, (list, tuple)):
+        return []
+    out = {}
+    for s in stations:
+        if isinstance(s, str) and s.strip() and not any(c in s for c in "\\/:"):
+            out.setdefault(s.strip().lower(), s.strip())
+    return sorted(out.values(), key=str.lower)
 
 
 # ---------------------------------------------------------------------------
@@ -1323,8 +1341,19 @@ def arrival_time(path: Path, listed=None) -> float:
     return max(created, st.st_mtime)
 
 
-def sort_queue(files: list, order: str, listed=None) -> list:
-    """Order files for processing according to the "order" setting."""
+def sort_queue(files: list, order: str, listed=None, by_station: bool = False) -> list:
+    """Order files for processing according to the "order" setting.
+
+    by_station (station mode): stations take turns hour by hour, so every
+    station's newest hour is done before anyone's older hours, instead of
+    one busy station's backlog holding up the rest."""
+    if by_station and order in ("newest_first", "oldest_first"):
+        sign = -1 if order == "newest_first" else 1
+
+        def key(p):
+            t = arrival_time(p, listed)
+            return (sign * int(t // 3600), p.parent.name.lower(), sign * t)
+        return sorted(files, key=key)
     if order == "oldest_first":
         return sorted(files, key=lambda p: arrival_time(p, listed))
     if order == "name":
@@ -1405,6 +1434,69 @@ class OutputNames:
             self.unsaved = False
         except OSError as e:
             log.warning("Could not save %s: %s", self.index_path.name, e)
+
+
+NOT_STATIONS = {"system volume information", "system_volume_information", "$recycle.bin"}
+
+
+def find_stations(input_dir, output_dir=None) -> list:
+    """Station folders in the Inbox (its subfolders), sorted by name.
+    Skips hidden and system folders, and the Transcripts folder if it sits
+    inside the Inbox."""
+    out = []
+    try:
+        skip = Path(output_dir).resolve() if output_dir else None
+    except OSError:
+        skip = None
+    try:
+        with os.scandir(input_dir) as entries:
+            for e in entries:
+                name = e.name
+                if name.startswith((".", "$")) or name.lower() in NOT_STATIONS:
+                    continue
+                try:
+                    if not e.is_dir():
+                        continue
+                    if skip is not None and Path(e.path).resolve() == skip:
+                        continue
+                except OSError:
+                    continue
+                out.append(name)
+    except OSError:
+        return []
+    return sorted(out, key=str.lower)
+
+
+def is_backup_copy(name: str) -> bool:
+    """A recorder's second "(Backup)" copy of an hour that's also recorded
+    normally: transcribing it would only do the same hour twice."""
+    return "(backup)" in name.lower()
+
+
+class StationNames:
+    """OutputNames for station mode: one per station subfolder of the
+    Transcripts folder (DZMB\\x.mp3 -> Transcripts\\DZMB\\x.txt)."""
+
+    def __init__(self, output_dir: Path):
+        self.output_dir = output_dir
+        self.by_station = {}
+        self.loaded = folder_problem(output_dir) is None
+
+    def _for(self, station: str) -> OutputNames:
+        names = self.by_station.get(station.lower())
+        if names is None:
+            names = self.by_station[station.lower()] = OutputNames(self.output_dir / station)
+        return names
+
+    def path_for(self, audio: Path) -> Path:
+        return self._for(audio.parent.name).path_for(audio)
+
+    def record(self, txt: Path, audio: Path, save: bool = True) -> None:
+        self._for(audio.parent.name).record(txt, audio, save)
+
+    def save(self) -> None:
+        for names in self.by_station.values():
+            names.save()
 
 
 class WorkClaim:
@@ -1561,7 +1653,10 @@ class Transcriber:
         self.config = config
         self.input_dir = Path(config["input_folder"])
         self.output_dir = Path(config["output_folder"])
-        self.names = OutputNames(self.output_dir)
+        # Station mode: the Inbox holds one folder per station (see "stations").
+        self.stations = clean_stations(config.get("stations"))
+        self.names = self._new_names()
+        self.missing_stations = set()  # ticked station folders not found (logged once)
         # Files that failed: name -> signature. Not retried unless the file changes.
         # (Passed in by the window, so skipped files stay skipped after a
         # settings change restarts this loop.)
@@ -1589,11 +1684,22 @@ class Transcriber:
         self.alerts = {}
         self.disk_level = "ok"  # "ok", "low" or "full"
 
+    def _new_names(self):
+        return StationNames(self.output_dir) if self.stations else OutputNames(self.output_dir)
+
+    def _output_listing(self, folder: Path):
+        """During a scan: the listing of this transcripts folder (lowercase
+        name -> modified time). None outside a scan (ask the disk)."""
+        if self._outputs is None:
+            return None
+        return self._outputs.get(folder, {})
+
     def is_claimed_by_other_pc(self, txt: Path) -> bool:
         """True if another PC is working on this transcript right now."""
         claim = txt.with_name(txt.name + WorkClaim.SUFFIX)
-        if self._outputs is not None:
-            mtime = self._outputs.get(claim.name.lower())
+        listing = self._output_listing(txt.parent)
+        if listing is not None:
+            mtime = listing.get(claim.name.lower())
         else:
             try:
                 mtime = claim.stat().st_mtime
@@ -1644,7 +1750,7 @@ class Transcriber:
         """True if this file has no .txt yet, isn't being done by another
         PC, and hasn't already failed here."""
         txt = self.names.path_for(audio)
-        listing = self._outputs
+        listing = self._output_listing(txt.parent)
         if (txt.name.lower() in listing) if listing is not None else txt.exists():
             # Transcripts made before the index existed: record who owns them,
             # so a later file with the same name gets its own .txt. (Saved
@@ -1692,10 +1798,26 @@ class Transcriber:
             # nothing in the Inbox has a transcript yet.)
             raise FolderUnreachable("; ".join(f"{f} ({why})" for _, f, why in gone))
         if not self.names.loaded:
-            self.names = OutputNames(self.output_dir)
-        self.listed = list_audio_entries(self.input_dir, self.config["file_types"])
+            self.names = self._new_names()
+        if self.stations:
+            self.listed, self._outputs = {}, {}
+            for station in self.stations:
+                folder = self.input_dir / station
+                if not folder.is_dir():
+                    if station not in self.missing_stations:
+                        self.missing_stations.add(station)
+                        log.warning("Station folder not found: %s (skipping it)", folder)
+                    continue
+                self.missing_stations.discard(station)
+                for name, entry in list_audio_entries(folder, self.config["file_types"]).items():
+                    if not is_backup_copy(name):
+                        self.listed[name] = entry
+                out = self.output_dir / station
+                self._outputs[out] = folder_listing(out)
+        else:
+            self.listed = list_audio_entries(self.input_dir, self.config["file_types"])
+            self._outputs = {self.output_dir: folder_listing(self.output_dir)}
         all_files = sorted((v[0] for v in self.listed.values()), key=lambda p: p.name.lower())
-        self._outputs = folder_listing(self.output_dir)
         try:
             waiting = [p for p in all_files if self.needs_work(p)]
         finally:
@@ -1730,13 +1852,18 @@ class Transcriber:
                 ready.append(p)
 
         self.started_scanning = True
-        return sort_queue(ready, self.config["order"], self.listed), waiting, saw_new_file
+        return self.sorted_queue(ready), waiting, saw_new_file
+
+    def sorted_queue(self, files: list) -> list:
+        return sort_queue(files, self.config["order"], self.listed, by_station=bool(self.stations))
 
     def process_one(self, audio: Path, still_waiting: int) -> None:
         """Transcribe one file. A failure is logged and never stops the program."""
         txt = self.names.path_for(audio)
         claim = WorkClaim(txt)
         try:
+            if self.stations:
+                txt.parent.mkdir(exist_ok=True)  # the station's transcripts folder
             got_it = claim.acquire()
         except OSError as e:
             if self.check_health():
@@ -1939,7 +2066,7 @@ class Transcriber:
                 hooks.sleep(interval)
                 continue
             hooks.event("queue", waiting=len(waiting),
-                        files=sort_queue(waiting, self.config["order"], self.listed),
+                        files=self.sorted_queue(waiting),
                         listed=self.listed)
 
             if blocked:  # disk almost full: new files wait
