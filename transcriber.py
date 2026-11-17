@@ -37,7 +37,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.33.0"
+__version__ = "1.34.0"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -215,6 +215,15 @@ DEFAULT_CONFIG = {
     # transcripts go to a subfolder of the same name in the Transcripts
     # folder. Empty = the normal single Inbox (files directly in it).
     "stations": [],
+    # Station mode only: which recordings to do, by the date and hour in
+    # their file name (e.g. "DZMB 2026-11-17 14-00-00.mp3").
+    # last_days: only today and the days before it (2 = today and
+    # yesterday); 0 = no limit. since_date: "YYYY-MM-DD" = only from that
+    # day on ("" = no limit). hours: [from, to) hours of the day, 0-24
+    # ([22, 5] = overnight).
+    "last_days": 2,
+    "since_date": "",
+    "hours": [0, 24],
 }
 
 VALID_MODELS = {"tiny", "base", "small", "medium", "large-v3-turbo", "large-v3"}
@@ -496,6 +505,92 @@ def load_config() -> dict:
     }
     config["stations"] = clean_stations(config.get("stations"))
     return config
+
+
+RECORDING_TIME = re.compile(r"(\d{4})-(\d{2})-(\d{2})[ _T](\d{2})[-.:h](\d{2})")
+
+
+def recording_time(name: str, fallback: float = None):
+    """When a recording starts, from its file name ("2026-11-17 14-00-00");
+    else the fallback time (e.g. the file's own date). A local datetime, or
+    None."""
+    import datetime as _dt
+    m = RECORDING_TIME.search(name)
+    if m:
+        try:
+            return _dt.datetime(*(int(x) for x in m.groups()))
+        except ValueError:
+            pass
+    if fallback is not None:
+        return _dt.datetime.fromtimestamp(fallback)
+    return None
+
+
+def clean_hours(hours) -> tuple:
+    """(from, to) hours, each 0-24; (0, 24) = all day."""
+    try:
+        a, b = (int(h) for h in hours)
+    except (TypeError, ValueError):
+        return 0, 24
+    a, b = max(0, min(23, a)), max(1, min(24, b))
+    return (0, 24) if a == b else (a, b)
+
+
+def clean_date(text) -> str:
+    """'YYYY-MM-DD', or '' if empty or not a real date."""
+    import datetime as _dt
+    try:
+        return _dt.date.fromisoformat(str(text or "").strip()).isoformat()
+    except ValueError:
+        return ""
+
+
+def station_filter(config):
+    """A test (when -> bool) for which station recordings to do, from the
+    last_days / since_date / hours settings."""
+    import datetime as _dt
+    try:
+        days = max(0, int(config.get("last_days") or 0))
+    except (TypeError, ValueError):
+        days = 0
+    since = clean_date(config.get("since_date"))
+    since = _dt.date.fromisoformat(since) if since else None
+    a, b = clean_hours(config.get("hours", (0, 24)))
+
+    def ok(when) -> bool:
+        if when is None:
+            return True
+        if days and when.date() < _dt.date.today() - _dt.timedelta(days=days - 1):
+            return False
+        if since and when.date() < since:
+            return False
+        h = when.hour
+        return (a <= h < b) if a < b else (h >= a or h < b)
+    return ok
+
+
+def describe_filter(config) -> str:
+    """e.g. 'last 2 days, 5:00 am to 10:00 pm'."""
+    parts = []
+    try:
+        days = int(config.get("last_days") or 0)
+    except (TypeError, ValueError):
+        days = 0
+    since = clean_date(config.get("since_date"))
+    if days:
+        parts.append("today only" if days == 1 else f"last {days} days")
+    elif since:
+        parts.append(f"from {since}")
+    else:
+        parts.append("all dates")
+    a, b = clean_hours(config.get("hours", (0, 24)))
+    parts.append("all day" if (a, b) == (0, 24) else f"{hour_label(a)} to {hour_label(b)}")
+    return ", ".join(parts)
+
+
+def hour_label(h: int) -> str:
+    h %= 24
+    return f"{(h % 12) or 12}:00 {'am' if h < 12 else 'pm'}"
 
 
 def clean_stations(stations) -> list:
@@ -1809,8 +1904,9 @@ class Transcriber:
                         log.warning("Station folder not found: %s (skipping it)", folder)
                     continue
                 self.missing_stations.discard(station)
+                wanted = station_filter(self.config)
                 for name, entry in list_audio_entries(folder, self.config["file_types"]).items():
-                    if not is_backup_copy(name):
+                    if not is_backup_copy(name) and wanted(recording_time(name, entry[2])):
                         self.listed[name] = entry
                 out = self.output_dir / station
                 self._outputs[out] = folder_listing(out)

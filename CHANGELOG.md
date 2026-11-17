@@ -6,6 +6,18 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.34.0] - 2026-11-17
+
+### Added
+- Station mode: choose which recordings to transcribe by date and time of
+  day (Settings → Stations → Choose...): all dates, only the last few days, or
+  from a date onward, and all day or between two hours. The date and hour
+  come from the file name. A live count shows how many recordings match.
+
+### Changed
+- Station mode now does only the last 2 days by default, instead of a
+  station's whole archive.
+
 ## [1.33.0] - 2026-11-17
 
 ### Added

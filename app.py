@@ -75,6 +75,8 @@ SETTING_NAMES = {
     "use_filename_hint": "Use file name as a hint", "input_folder": "Inbox folder",
     "output_folder": "Transcripts folder", "_autostart": "Start with Windows",
     "check_for_updates": "Check for updates", "stations": "Stations",
+    "last_days": "Recordings from (days)", "since_date": "Recordings from (date)",
+    "hours": "Hours of the day",
 }
 # Changes with bigger effects (a download, folders, Windows start-up) are
 # confirmed in a dialog before they're applied.
@@ -2068,6 +2070,15 @@ def build_app_class():
                 return str(Path(value))
             if key == "stations":
                 return T.clean_stations(value)
+            if key == "last_days":
+                try:
+                    return max(0, int(value or 0))
+                except (TypeError, ValueError):
+                    return 0
+            if key == "since_date":
+                return T.clean_date(value)
+            if key == "hours":
+                return list(T.clean_hours(value))
             if key in ("vad_filter", "include_timestamps", "label_music", "use_filename_hint",
                        "check_for_updates"):
                 return bool(value)
@@ -2076,7 +2087,8 @@ def build_app_class():
         def shown_values(self):
             """Saved settings with any not-yet-applied changes on top."""
             c = self.config_raw()
-            keys = WINDOW_SETTINGS + ("input_folder", "output_folder", "_autostart", "stations")
+            keys = WINDOW_SETTINGS + ("input_folder", "output_folder", "_autostart", "stations",
+                                    "last_days", "since_date", "hours")
             values = {k: self.current_value(k, c) for k in keys}
             values.update(self.pending)
             return values
@@ -2098,7 +2110,9 @@ def build_app_class():
                 else:
                     lbl.configure(text=short_path(v[key]), text_color=GRAY)
             text = self.describe("stations", v["stations"])
-            if "stations" in self.pending:
+            if v["stations"]:
+                text += "\nRecordings: " + T.describe_filter(v)
+            if any(k in self.pending for k in ("stations", "last_days", "since_date", "hours")):
                 self.stations_label.configure(text=text + "  (not applied yet)", text_color=AMBER)
             else:
                 self.stations_label.configure(text=text, text_color=GRAY)
@@ -2114,7 +2128,8 @@ def build_app_class():
             self.saved_text.configure(text="")
             if key == "label_music":
                 self.show_vad_switch(not value)
-            if key in self.folder_labels or key == "stations":
+            if key in self.folder_labels or key in ("stations", "last_days", "since_date",
+                                                    "hours"):
                 self.load_settings_into_widgets()
             else:
                 self.refresh_pending()
@@ -2153,6 +2168,12 @@ def build_app_class():
                 names = ", ".join(value[:6]) + (f" and {len(value) - 6} more"
                                                 if len(value) > 6 else "")
                 return f"{len(value)} station{'s' if len(value) > 1 else ''}: {names}"
+            if key == "last_days":
+                return f"last {value} days" if value else "no limit"
+            if key == "since_date":
+                return value or "no limit"
+            if key == "hours":
+                return T.describe_filter({"hours": value}).split(", ")[1]
             return str(value)
 
         def apply_changes(self):
@@ -2213,7 +2234,8 @@ def build_app_class():
             self.pending.clear()
             if config_changes:
                 self.engine.settings_changed()
-            if any(k in changes for k in ("input_folder", "output_folder", "stations")):
+            if any(k in changes for k in ("input_folder", "output_folder", "stations",
+                                          "last_days", "since_date", "hours")):
                 self.completed, self.last_completed_scan = [], 0.0
                 self.view_keys.clear()
             if "output_folder" in changes:
@@ -2286,7 +2308,7 @@ def build_app_class():
 
             dlg = ctk.CTkToplevel(self)
             dlg.title("Stations")
-            dlg.geometry("420x560")
+            dlg.geometry("440x780")
             dlg.transient(self)
             dlg.after(100, dlg.grab_set)
             dlg.grid_columnconfigure(0, weight=1)
@@ -2310,7 +2332,7 @@ def build_app_class():
             for name in names:
                 cb = ctk.CTkCheckBox(box, text=name if name in found else f"{name}  (folder not found)",
                                      font=font(12), checkbox_width=18, checkbox_height=18,
-                                     command=lambda: update_count())
+                                     command=lambda: (update_count(), recount()))
                 if name.lower() in ticked:
                     cb.select()
                 cb.pack(fill="x", anchor="w", padx=8, pady=3)
@@ -2337,22 +2359,171 @@ def build_app_class():
                     if q in n.lower():
                         cb.select() if on else cb.deselect()
                 update_count()
+                recount()
 
-            bar = ctk.CTkFrame(dlg, fg_color="transparent")
-            bar.grid(row=4, column=0, sticky="ew", padx=18, pady=12)
-            ghost_button(bar, "Tick all", lambda: set_all(True), width=80).pack(side="left")
-            ghost_button(bar, "Untick all", lambda: set_all(False), width=90
+            picks = ctk.CTkFrame(dlg, fg_color="transparent")
+            picks.grid(row=4, column=0, sticky="ew", padx=18, pady=(6, 0))
+            ghost_button(picks, "Tick all", lambda: set_all(True), width=80).pack(side="left")
+            ghost_button(picks, "Untick all", lambda: set_all(False), width=90
                          ).pack(side="left", padx=(6, 0))
 
+            # --- which recordings: by the date and hour in their file names
+            flt = ctk.CTkFrame(dlg, fg_color="transparent")
+            flt.grid(row=5, column=0, sticky="ew", padx=18, pady=(14, 0))
+            ctk.CTkLabel(flt, text="Recordings from", font=font(12, "bold"), anchor="w"
+                         ).grid(row=0, column=0, columnspan=3, sticky="w")
+            days0 = int(values.get("last_days") or 0)
+            since0 = T.clean_date(values.get("since_date"))
+            mode = ctk.StringVar(value="days" if days0 else "since" if since0 else "all")
+            rb = dict(font=font(12), radiobutton_width=16, radiobutton_height=16,
+                      variable=mode, command=lambda: recount())
+            ctk.CTkRadioButton(flt, text="All dates", value="all", **rb
+                               ).grid(row=1, column=0, columnspan=3, sticky="w", pady=3)
+            ctk.CTkRadioButton(flt, text="Only the last", value="days", **rb
+                               ).grid(row=2, column=0, sticky="w", pady=3)
+            days_box = ctk.CTkEntry(flt, width=50, height=28)
+            days_box.insert(0, str(days0 or 2))
+            days_box.grid(row=2, column=1, sticky="w", padx=6)
+            ctk.CTkLabel(flt, text="days (1 = today only)", text_color=GRAY, font=font(11)
+                         ).grid(row=2, column=2, sticky="w")
+            ctk.CTkRadioButton(flt, text="From date", value="since", **rb
+                               ).grid(row=3, column=0, sticky="w", pady=3)
+            since_box = ctk.CTkEntry(flt, width=110, height=28, placeholder_text="2026-11-17")
+            if since0:
+                since_box.insert(0, since0)
+            since_box.grid(row=3, column=1, sticky="w", padx=6)
+            ctk.CTkLabel(flt, text="onward (YYYY-MM-DD)", text_color=GRAY, font=font(11)
+                         ).grid(row=3, column=2, sticky="w")
+            for entry, which in ((days_box, "days"), (since_box, "since")):
+                entry.bind("<FocusIn>", lambda e, w=which: mode.set(w))
+                entry.bind("<KeyRelease>", lambda e: recount())
+
+            ctk.CTkLabel(flt, text="Hours of the day", font=font(12, "bold"), anchor="w"
+                         ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(12, 0))
+            a0, b0 = T.clean_hours(values.get("hours"))
+            hour_names = [T.hour_label(h) for h in range(24)]
+            hours_row = ctk.CTkFrame(flt, fg_color="transparent")
+            hours_row.grid(row=5, column=0, columnspan=3, sticky="w", pady=(4, 0))
+            all_day = ctk.CTkCheckBox(hours_row, text="All day", font=font(12), checkbox_width=18,
+                                      checkbox_height=18, command=lambda: recount())
+            all_day.pack(side="left")
+            if (a0, b0) == (0, 24):
+                all_day.select()
+                a0, b0 = 5, 22  # what "from / to" offer when All day is unticked
+            ctk.CTkLabel(hours_row, text="   or from", font=font(12)).pack(side="left")
+            from_sel = Select(hours_row, hour_names,
+                              command=lambda v: (all_day.deselect(), recount()))
+            from_sel.configure(width=105)
+            from_sel.set(hour_names[a0])
+            from_sel.pack(side="left", padx=6)
+            ctk.CTkLabel(hours_row, text="to", font=font(12)).pack(side="left")
+            to_sel = Select(hours_row, hour_names,
+                            command=lambda v: (all_day.deselect(), recount()))
+            to_sel.configure(width=105)
+            to_sel.set(hour_names[b0 % 24])
+            to_sel.pack(side="left", padx=6)
+            matches = ctk.CTkLabel(dlg, text="", anchor="w", justify="left", font=font(12),
+                                   text_color=ACCENT, wraplength=400)
+            matches.grid(row=6, column=0, sticky="ew", padx=18, pady=(12, 0))
+
+            def filter_settings():
+                """The filter as settings, or (None, why) if a box is wrong."""
+                m = mode.get()
+                days, since = 0, ""
+                if m == "days":
+                    try:
+                        days = int(days_box.get().strip())
+                        if not 1 <= days <= 3650:
+                            raise ValueError
+                    except ValueError:
+                        return None, "Enter a number of days (1 or more)."
+                elif m == "since":
+                    since = T.clean_date(since_box.get())
+                    if not since:
+                        return None, "Enter the date like 2026-11-17."
+                if all_day.get():
+                    hours = [0, 24]
+                else:
+                    a = hour_names.index(from_sel.get())
+                    b = hour_names.index(to_sel.get()) or 24
+                    if a == b % 24:
+                        return None, "Choose two different hours, or tick All day."
+                    hours = [a, b]
+                return {"last_days": days, "since_date": since, "hours": hours}, None
+
+            listing_cache = {}
+            pending = {"job": None, "run": 0}
+            types = {"." + str(e).lower().lstrip(".")
+                     for e in self.config_raw().get("file_types", [])}
+
+            def recount():
+                if pending["job"]:
+                    dlg.after_cancel(pending["job"])
+                pending["job"] = dlg.after(400, start_count)
+
+            def start_count():
+                pending["job"] = None
+                settings, why = filter_settings()
+                if settings is None:
+                    matches.configure(text=why, text_color=AMBER)
+                    return
+                stations = [n for n in chosen() if n in found]
+                if not stations:
+                    matches.configure(text="Tick at least one station.", text_color=GRAY)
+                    return
+                pending["run"] += 1
+                run = pending["run"]
+                matches.configure(text="Counting recordings…", text_color=GRAY)
+
+                def work():
+                    wanted, total, match = T.station_filter(settings), 0, 0
+                    for st in stations:
+                        if st not in listing_cache:
+                            try:
+                                listing_cache[st] = T.list_audio_entries(inbox / st, types)
+                            except OSError:
+                                listing_cache[st] = {}
+                        for name, entry in list(listing_cache[st].items()):
+                            if T.is_backup_copy(name):
+                                continue
+                            total += 1
+                            if wanted(T.recording_time(name, entry[2])):
+                                match += 1
+                    self.ui_calls.put(lambda: show(run, match, total))
+                threading.Thread(target=work, name="count-recordings", daemon=True).start()
+
+            def show(run, match, total):
+                if run != pending["run"] or not dlg.winfo_exists():
+                    return
+                if match:
+                    text = (f"Matches {match:,} of {total:,} recordings. "
+                            "Ones already transcribed aren't done again.")
+                else:
+                    text = f"Matches none of the {total:,} recordings."
+                matches.configure(text=text, text_color=ACCENT if match else AMBER)
+
+            bar = ctk.CTkFrame(dlg, fg_color="transparent")
+            bar.grid(row=7, column=0, sticky="ew", padx=18, pady=12)
+
             def done():
+                settings, why = filter_settings()
+                if settings is None:
+                    messagebox.showwarning("Stations", why, parent=dlg)
+                    return
                 self.stage("stations", T.clean_stations(chosen()))
+                for k, v in settings.items():
+                    self.stage(k, v)
                 dlg.destroy()
             ctk.CTkButton(bar, text="OK", width=80, height=30, command=done).pack(side="right")
             ghost_button(bar, "Cancel", dlg.destroy, width=80, height=30
                          ).pack(side="right", padx=(0, 8))
             dlg.bind("<Escape>", lambda e: dlg.destroy())
             update_count()
+            recount()
             dlg._boxes, dlg._done, dlg._search, dlg._filter = boxes, done, search, filter_list  # (for tests)
+            dlg._mode, dlg._days, dlg._all_day, dlg._from, dlg._to, dlg._matches = (
+                mode, days_box, all_day, from_sel, to_sel, matches)
+            dlg._recount = recount
             return dlg
 
         def edit_config(self):
