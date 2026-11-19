@@ -37,7 +37,7 @@ from pathlib import Path
 
 # Bump this for each release (and add an entry to CHANGELOG.md). The release
 # build checks that the git tag (e.g. v1.0.0) matches it.
-__version__ = "1.34.0"
+__version__ = "1.34.1"
 APP_NAME = "Audio Transcriber"
 
 # This PC's name. Written into claim files so PCs sharing a folder can tell
@@ -564,8 +564,13 @@ def station_filter(config):
             return False
         if since and when.date() < since:
             return False
-        h = when.hour
-        return (a <= h < b) if a < b else (h >= a or h < b)
+        def in_hours(h):
+            return (a <= h < b) if a < b else (h >= a or h < b)
+        if in_hours(when.hour):
+            return True
+        # A recording that doesn't start on the hour (the recorder restarted,
+        # e.g. "04-46-15") runs into the next hour: keep it if that hour counts.
+        return bool(when.minute or when.second) and in_hours((when.hour + 1) % 24)
     return ok
 
 
@@ -1980,7 +1985,13 @@ class Transcriber:
             start = time.time()
             before = file_signature(audio)
             transcribe_file(self.model, audio, txt, self.config, self.hooks)
-            if file_signature(audio) != before:
+            after = file_signature(audio)
+            if after and before and after != before and after[0] == before[0]:
+                # Same size, only the date changed: some recorders touch a
+                # file once more after closing it. The audio is the same.
+                log.info("%s was touched by another program while it was being transcribed "
+                         "(same size, so the transcript is kept).", audio.name)
+            elif after != before:
                 # Still being recorded or copied after all: throw this
                 # transcript away; the file is redone once it settles.
                 log.warning("%s changed while it was being transcribed (still being "

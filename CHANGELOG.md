@@ -6,6 +6,19 @@ Versions follow [Semantic Versioning](https://semver.org/):
 
 ## [Unreleased]
 
+## [1.34.1] - 2026-11-19
+
+### Fixed
+- Station mode: a recording that starts just before the "Hours of the day"
+  window (the recorder restarted at e.g. 4:46 for a 5:00 am start) was
+  skipped, so that hour was never transcribed. It's now included.
+- A finished transcript was thrown away and redone when another program only
+  touched the recording's date after it closed. It's now redone only if the
+  recording's size changed.
+
+### Added
+- Pausing and resuming is written to the log.
+
 ## [1.34.0] - 2026-11-17
 
 ### Added

@@ -284,6 +284,10 @@ class Engine(T.Hooks):
         self._wake.set()
 
     def set_paused(self, paused: bool):
+        if paused != self._paused.is_set():
+            current = self.state.get("file")
+            log.info("%s%s", "Paused" if paused else "Resumed",
+                     f" ({current})" if current else "")
         if paused:
             self._paused.set()
         else:
