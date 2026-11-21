@@ -65,6 +65,7 @@
 - [Getting started](#getting-started)
 - [Configuration](#configuration)
 - [Large archives and long recordings](#large-archives-and-long-recordings)
+- [Radio station archives (station mode)](#radio-station-archives-station-mode)
 - [Running on several PCs](#running-on-several-pcs)
 - [Language support](#language-support)
 - [GPU acceleration](#gpu-acceleration-optional)
@@ -84,6 +85,10 @@
   watching it and transcribes new files as they arrive.
 - **Newest first:** fresh recordings jump ahead of an existing backlog, so
   today's files don't wait behind an archive.
+- **Radio station archives:** point it at a logger archive with one folder
+  per station, tick the stations to transcribe, and choose which dates and
+  hours of the day to cover. Each station's transcripts go to their own
+  folder. See [station mode](#radio-station-archives-station-mode).
 - **Scales across PCs:** several PCs can share one network folder and split
   the work automatically, without ever doing the same file twice.
 - **Many formats:** `.mp3`, `.mp4`, `.m4a`, `.wav`, `.flac`, `.ogg`, `.opus`,
@@ -92,8 +97,15 @@
 - **Safe:** original files are only read, never modified, moved or deleted.
   Files that already have a transcript are skipped, so re-running is safe.
 - **Robust:** waits until a file has finished copying before starting, and a
-  corrupted file is logged and skipped without stopping the program. Only
-  one copy per PC can watch a folder, so files are never processed twice.
+  corrupted file is logged and skipped without stopping the program. A file
+  that fails is tried again automatically (after 30 minutes, 2 hours and
+  6 hours). Only one copy per PC can watch a folder, so files are never
+  processed twice.
+- **Tells you when something's wrong:** a red banner and a notification if
+  the Inbox or Transcripts folder can't be reached (a network share dropped,
+  a drive letter changed), and a warning when disk space runs low. It
+  pauses before a transcript could be cut off, and carries on by itself once
+  the problem is fixed.
 - **Accurate on music and speech:** uses the file name as a hint for names and
   song titles, and removes lines Whisper is known to invent (such as
   *"Thanks for watching!"*).
@@ -242,6 +254,7 @@ with unapplied changes asks whether to apply them.
 | Label music and songs | `label_music` |
 | Use file name as a hint | `use_filename_hint` |
 | Folders → Change | `input_folder`, `output_folder` |
+| Folders → Stations → Choose | `stations`, `last_days`, `since_date`, `hours` |
 | Device | `device` |
 
 The remaining settings (`file_types`, `poll_interval_seconds`) are
@@ -268,7 +281,7 @@ only in `config.json`; restart the program after editing it by hand.
 
 | Setting | Default | Description |
 |---|---|---|
-| `input_folder` | `Documents\Audio Transcriber\Inbox` | Folder to read audio/video files from. Subfolders are not scanned. Created if missing. |
+| `input_folder` | `Documents\Audio Transcriber\Inbox` | Folder to read audio/video files from. Subfolders are not scanned, except the ticked station folders in station mode. Created if missing. |
 | `output_folder` | `Documents\Audio Transcriber\Transcripts` | Folder to save `.txt` transcripts to. Created if missing. |
 | `model_size` | `small` | `tiny`, `base`, `small`, `medium`, `large-v3-turbo` or `large-v3`. Larger is more accurate but slower and uses more memory. See [Choosing a model](#choosing-a-model). |
 | `language` | `auto` | `auto` detects the language. Or force one with a code, e.g. `en` (English) or `tl` (Tagalog). |
@@ -284,6 +297,11 @@ only in `config.json`; restart the program after editing it by hand.
 | `order` | `newest_first` | Which waiting file to do next: `newest_first` (fresh recordings first), `oldest_first`, or `name` (alphabetical). The folder is re-checked after every file, so a new file goes next even during a long backlog. |
 | `poll_interval_seconds` | `10` | How often to check the input folder for new files. |
 | `device` | `auto` | `auto` uses an NVIDIA GPU if available, otherwise the CPU. Force with `cuda` or `cpu`. |
+| `stations` | `[]` | Station mode: names of the station folders inside `input_folder` to transcribe, e.g. `["DWCMFM", "DZMB"]`. Empty = normal mode (files directly in the Inbox). See [station mode](#radio-station-archives-station-mode). |
+| `last_days` | `2` | Station mode: only recordings from today and the days before it (`1` = today only). `0` = no limit. |
+| `since_date` | `""` | Station mode: only recordings from this date on, e.g. `"2026-11-17"`. Used when `last_days` is `0`. |
+| `hours` | `[0, 24]` | Station mode: hours of the day to cover, from and to, e.g. `[5, 22]` for 5:00 am to 10:00 pm, or `[22, 5]` for overnight. `[0, 24]` = all day. |
+| `disk_warn_gb`, `disk_pause_gb` | `5`, `1` | Not shown in the window. Warn when free space on the Transcripts drive drops below the first, and pause new files below the second. |
 
 ### Recommended settings
 
@@ -340,6 +358,53 @@ already fully used). To go faster:
 
 If the program is closed in the middle of a file, that file starts again from
 the beginning next time.
+
+## Radio station archives (station mode)
+
+For a logger archive with one folder per station, each holding hourly
+recordings, for example:
+
+```
+\\server\d\
+    DWCMFM\   DWCM - FM 2026-11-17 13-00-00.mp3, ...
+    DZMB\     DZMB 2026-11-17 13-00-00.mp3, ...
+    ...
+```
+
+1. **Settings → Folders → Inbox:** choose the archive's top folder (the one
+   that holds the station folders).
+2. **Transcripts:** choose where the `.txt` files should go.
+3. **Stations → Choose...:** tick the stations to transcribe, and choose
+   which recordings:
+   - **Recordings from:** all dates, only the last few days (default: 2,
+     today and yesterday), or from a date onward.
+   - **Hours of the day:** all day, or between two hours (e.g. 5:00 am to
+     10:00 pm).
+
+   A live count shows how many recordings match before you click **OK**.
+   Then click **Apply**.
+
+How it works:
+
+- Each station's transcripts go to a folder of the same name in the
+  Transcripts folder (`Transcripts\DZMB\DZMB 2026-11-17 13-00-00.txt`).
+- The date and hour come from the file name (`2026-11-17 13-00-00`). A
+  recording that doesn't start on the hour (the recorder restarted at 4:46)
+  counts for the hour it runs into, so it isn't missed by a 5:00 am start.
+- Stations take turns hour by hour: every ticked station's newest hour is
+  done before anyone's older hours, so one busy station can't hold up the
+  rest.
+- Recorder `(Backup)` copies, `.vrd` files and `index.html` are skipped.
+  Folders that aren't stations (system folders, and the Transcripts folder if
+  it's inside the archive) aren't offered.
+- The recordings are only read, never changed. Recordings outside the filter
+  simply aren't queued; widen the filter to bring them back.
+
+**Plan the workload.** Each station records 24 hours a day. On a CPU, one
+hour of audio takes roughly 20–45 minutes with `large-v3-turbo`, so one PC
+keeps up with about one station around the clock. Limit the hours, use a
+smaller model, add PCs (see below), or add an NVIDIA GPU to cover more
+stations.
 
 ## Running on several PCs
 
@@ -421,10 +486,14 @@ and keeps working.
 | A file is ignored | Check its real extension: Windows hides extensions by default, so a `.mp4` can look like an MP3. Enable *View → Show → File name extensions* in Explorer and make sure the extension is in `file_types`. |
 | Only part of a song is transcribed | Turn off **Skip silence** (`"vad_filter": false`). |
 | `config.json is not valid JSON` | Paths need double backslashes (`C:\\Users\\...`), and every line except the last needs a comma. |
-| A file failed | The error is shown in the Activity box (and a notification) and saved in `transcriber.log`. Failed files are not retried unless the file changes; restart the program to retry. |
+| A file failed | It's tried again automatically after 30 minutes, 2 hours and 6 hours (the **Issues** tab shows when). After that it stays failed until the file changes or you click **Retry**. The error is also saved in `transcriber.log`. |
+| Red banner: "Can't reach the Inbox / Transcripts folder" | A network share dropped, a drive letter changed, or a USB drive was unplugged. Reconnect it; the program carries on by itself (or click **Check now**). A file that was interrupted is done again, not counted as failed. |
+| "Disk space is running low" / "Almost out of disk space" | Free up space on the drive shown. Below 1 GB free, new files wait until there's room again, so no transcript gets cut off. |
+| Station mode queues months of old recordings | Settings → Stations → Choose... → **Recordings from**: pick **Only the last** few days or a start date. |
+| A file sat at the same percentage for hours | Check `transcriber.log` for **Paused** / **Resumed**, and make sure the PC doesn't go to sleep (Windows **Settings → System → Power & sleep → Never**). |
 | "Another copy of the transcriber is already watching..." | The program is already running. Look for its icon in the system tray next to the clock (maybe under **^**), right-click it → **Quit**. |
 | A transcript should be redone | Delete its `.txt` file; it is transcribed again within one check. |
-| Very slow | Choose **Mode: Fast** or a smaller **Quality**, or set up a GPU. |
+| Very slow | Choose a smaller **Quality**, or set up a GPU. On a very slow PC, `"speed": "fast"` in `config.json` is about 35% faster. |
 | No tray icon | Click the **^** arrow next to the clock; Windows hides new tray icons there. Drag it out to keep it visible. |
 | `GPU could not be used` | The CUDA libraries are missing; see [GPU acceleration](#gpu-acceleration-optional). |
 | Antivirus warning | Unsigned programs built with PyInstaller are sometimes flagged by mistake. Building it yourself from this source avoids trusting a third-party binary. |
